@@ -69,6 +69,8 @@ def build(con):
     s = _settings(con)
     hr_rest = _num(s, "hr_rest", 50)
     hr_max = _num(s, "hr_max", 185)
+    peak = con.execute("SELECT MAX(max_hr) FROM activity").fetchone()[0] or 0
+    hr_max = max(hr_max, peak)          # self-calibrate up to any observed peak
     need_min = _num(s, "sleep_need_min", 480)
     weights = {"hrv_sub": _num(s, "w_hrv", .40), "sleep_sub": _num(s, "w_sleep", .25),
                "rhr_sub": _num(s, "w_rhr", .10), "load_sub": _num(s, "w_load", .15),
