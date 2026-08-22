@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS eightsleep_night (
     hrv_ms          REAL,
     resting_hr      REAL,
     breath_rate     REAL,
+    bed_temp        REAL,
     raw_id          INTEGER REFERENCES raw_pull(id)
 );
 
@@ -76,6 +77,26 @@ CREATE TABLE IF NOT EXISTS readiness (
     drivers      TEXT,
     flags        TEXT,
     computed_at  TEXT
+);
+
+-- Full recovery metric suite (vitals ranges, HRV status, energy, strain, trends)
+CREATE TABLE IF NOT EXISTS metrics_daily (
+    day             TEXT PRIMARY KEY,
+    energy          REAL,   -- Body Battery style reserve now (0-100)
+    energy_am       REAL,   -- morning charge
+    strain          REAL,   -- 0-21
+    recovery_hours  REAL,
+    training_status TEXT,
+    hrv             REAL, hrv_7d REAL, hrv_mean REAL, hrv_sd REAL, hrv_status TEXT,
+    rhr             REAL, rhr_mean REAL, rhr_sd REAL,
+    resp            REAL, resp_mean REAL, resp_sd REAL,
+    bed_temp        REAL, temp_mean REAL, temp_sd REAL,
+    sleep_min       REAL, sleep_mean REAL, sleep_sd REAL,
+    sleep_score     REAL, deep_min REAL, rem_min REAL, light_min REAL, awake_min REAL,
+    efficiency      REAL,
+    vo2max          REAL, steps INTEGER,
+    load            REAL, ctl REAL, atl REAL, form REAL,
+    readiness       REAL
 );
 
 CREATE TABLE IF NOT EXISTS settings (

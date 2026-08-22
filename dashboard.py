@@ -1,12 +1,14 @@
-"""Render a self-contained mobile dashboard to docs/index.html for GitHub Pages.
+"""Render a self-contained mobile recovery dashboard to docs/index.html.
 
-Privacy: if DASHBOARD_PASSPHRASE is set in .env, the health content is AES-256-GCM
-encrypted (PBKDF2-SHA256, 200k iters) before writing. The published file holds only
-ciphertext; the browser decrypts locally after the passphrase is entered once. The
-passphrase never enters the repo. Without it set, the page is written in plain text
-(local preview only -- do NOT publish plaintext).
+Sections: readiness, energy (Body Battery), vitals vs typical range, HRV status,
+sleep detail, training load / strain, trends, and expandable activities. Driven by
+the metrics_daily + readiness + activity tables.
 
-Run:  .\.venv\Scripts\python.exe dashboard.py
+Privacy: if DASHBOARD_PASSPHRASE is set, the body is AES-256-GCM encrypted before
+writing; the published file is ciphertext, decrypted in the browser. See README.
+
+Run:  .\.venv\Scripts\python.exe dashboard.py            (encrypted, to docs/)
+      .\.venv\Scripts\python.exe dashboard.py preview X  (plaintext preview to X)
 """
 import base64
 import json
@@ -44,34 +46,7 @@ def _icon(sport):
     return SPORT_ICON.get((sport or "").lower(), "\U0001F3C5")
 
 
-def _bar(label, val):
-    v = 0 if val is None else max(0, min(100, val))
-    col = band(v)[1]
-    return f"""
-      <div class="cmp">
-        <div class="cmp-l"><span>{label}</span><span>{'' if val is None else round(v)}</span></div>
-        <div class="track"><div class="fill" style="width:{v}%;background:{col}"></div></div>
-      </div>"""
-
-
-def _trend_svg(hist):
-    hist = hist[-45:]
-    if not hist:
-        return "<p class='muted'>No history yet.</p>"
-    n = len(hist)
-    w, h, gap = 320, 90, 2
-    bw = (w - (n - 1) * gap) / n
-    bars = []
-    for i, (day, sc) in enumerate(hist):
-        sc = sc or 0
-        bh = max(2, sc / 100 * h)
-        x, y = i * (bw + gap), h - max(2, sc / 100 * h)
-        bars.append(f'<rect x="{x:.1f}" y="{y:.1f}" width="{bw:.1f}" height="{bh:.1f}" '
-                    f'rx="1.5" fill="{band(sc)[1]}"><title>{day}: {round(sc)}</title></rect>')
-    return (f'<svg viewBox="0 0 {w} {h}" preserveAspectRatio="none" class="trend" '
-            f'role="img" aria-label="readiness trend">{"".join(bars)}</svg>')
-
-
+# ---------------------------------------------------------------- activities
 def _hms(s):
     s = int(s or 0)
     h, m, sec = s // 3600, (s % 3600) // 60, s % 60
@@ -92,7 +67,6 @@ def _pace(spd, sport):
 
 
 def _activity_detail(p, trimp):
-    """All meaningful, populated fields from the raw Intervals activity payload."""
     rows = []
 
     def add(label, val):
@@ -154,22 +128,140 @@ def _activities_html(acts):
     return "".join(out)
 
 
-def _body(r, hist, acts, form_swims):
-    (day, score, hrv_s, sleep_s, rhr_s, load_s, debt_s, ctl, atl, form,
-     hrv_src, sleep_src, drivers, flags) = r
+# ---------------------------------------------------------------- components
+def _battery(energy):
+    e = 0 if energy is None else max(0, min(100, energy))
+    return (f'<div class="batt"><div class="batt-fill" style="width:{e}%;'
+            f'background:{band(e)[1]}"></div><span class="batt-num">{round(e)}</span></div>')
+
+
+def _vital(label, value, mean, sd, unit, higher_better, dp=0):
+    if value is None:
+        return ""
+    vs = f"{value:.{dp}f}{unit}"
+    if mean is None or sd is None or sd == 0:
+        return (f'<div class="vital"><div class="vl">{label}</div>'
+                f'<div class="vv">{vs}</div><div class="vr"></div></div>')
+    lo, hi = mean - sd, mean + sd
+    status = "in" if lo <= value <= hi else ("high" if value > hi else "low")
+    bad = (status == "low" and higher_better) or (status == "high" and not higher_better)
+    col = "var(--amber)" if (status != "in" and bad) else "var(--teal)"
+    smin, smax = mean - 3 * sd, mean + 3 * sd
+    span = (smax - smin) or 1
+
+    def pos(x):
+        return max(0, min(100, (x - smin) / span * 100))
+
+    bl, br = pos(lo), pos(hi)
+    bar = (f'<div class="vr"><div class="vband" style="left:{bl:.0f}%;width:{br - bl:.0f}%">'
+           f'</div><div class="vdot" style="left:{pos(value):.0f}%;background:{col}"></div></div>')
+    return f'<div class="vital"><div class="vl">{label}</div><div class="vv">{vs}</div>{bar}</div>'
+
+
+def _stages(deep, rem, light, awake):
+    segs = [("Deep", deep, "#4062c0"), ("REM", rem, "#8b5cf6"),
+            ("Light", light, "#3ba0c4"), ("Awake", awake, "#5a6472")]
+    total = sum(v for _, v, _ in segs if v) or 1
+    bars = "".join(f'<div style="width:{(v or 0) / total * 100:.1f}%;background:{c}"></div>'
+                   for _, v, c in segs)
+    legend = "".join(f'<span class="lg"><i style="background:{c}"></i>{n} {round(v or 0)}m</span>'
+                     for n, v, c in segs)
+    return f'<div class="stages">{bars}</div><div class="legend">{legend}</div>'
+
+
+def _spark_svg(vals):
+    vals = [v for v in vals if v is not None][-60:]
+    if len(vals) < 2:
+        return ""
+    lo, hi = min(vals), max(vals)
+    rng = (hi - lo) or 1
+    n, w, h = len(vals), 100, 28
+    pts = " ".join(f"{i / (n - 1) * w:.1f},{h - (v - lo) / rng * h:.1f}" for i, v in enumerate(vals))
+    return (f'<svg viewBox="0 0 {w} {h}" preserveAspectRatio="none" class="spk">'
+            f'<polyline points="{pts}" fill="none" stroke="var(--teal)" stroke-width="1.5"/></svg>')
+
+
+def _trend_row(label, series, unit="", dp=0, scale=1.0):
+    pts = [v * scale for v in series if v is not None]
+    if not pts:
+        return ""
+    cur = pts[-1]
+    recent = pts[-30:]
+    avg = sum(recent) / len(recent)
+    return (f'<div class="trow"><div class="tlbl">{label}</div>'
+            f'<div class="tspark">{_spark_svg(pts)}</div>'
+            f'<div class="tval">{cur:.{dp}f}{unit}<span class="tavg">avg {avg:.{dp}f}</span></div></div>')
+
+
+def _trend_svg(hist):
+    hist = hist[-45:]
+    if not hist:
+        return "<p class='muted'>No history yet.</p>"
+    n, w, h, gap = len(hist), 320, 90, 2
+    bw = (w - (n - 1) * gap) / n
+    bars = []
+    for i, (day, sc) in enumerate(hist):
+        sc = sc or 0
+        bh = max(2, sc / 100 * h)
+        bars.append(f'<rect x="{i * (bw + gap):.1f}" y="{h - bh:.1f}" width="{bw:.1f}" '
+                    f'height="{bh:.1f}" rx="1.5" fill="{band(sc)[1]}"><title>{day}: {round(sc)}</title></rect>')
+    return (f'<svg viewBox="0 0 {w} {h}" preserveAspectRatio="none" class="trend" '
+            f'role="img" aria-label="readiness trend">{"".join(bars)}</svg>')
+
+
+# ---------------------------------------------------------------- page body
+def _body(m, rd, hist, acts, form_swims, vo2max):
+    score = m["readiness"]
     label, col = band(score)
     circ = 2 * 3.14159 * 52
     dash = circ * (1 - (score or 0) / 100)
-    ctl, atl, form = ctl or 0, atl or 0, form or 0
+    drivers = rd["drivers"] if rd else ""
+    flags = rd["flags"] if rd else ""
+    hrv_src = rd["hrv_source"] if rd else "--"
+    sleep_src = rd["sleep_source"] if rd else "--"
 
     banners = ""
     if form_swims:
-        banners += ('<div class="ban ban-ok">FORM swim data live &middot; goggle HR now '
-                    'drives swim load</div>')
+        banners += ('<div class="ban ban-ok">FORM swim data live &middot; goggle HR drives swim load</div>')
     if flags:
         banners += f'<div class="ban ban-warn">{flags}</div>'
-    comps = (_bar("HRV", hrv_s) + _bar("Sleep", sleep_s) + _bar("Resting HR", rhr_s)
-             + _bar("Load", load_s) + _bar("Sleep debt", debt_s))
+
+    # vitals (temperature omitted -- Eight Sleep exposes bed temp, not skin temp)
+    vitals = (
+        _vital("HRV", m["hrv"], m["hrv_mean"], m["hrv_sd"], " ms", True, 0)
+        + _vital("Resting HR", m["rhr"], m["rhr_mean"], m["rhr_sd"], " bpm", False, 0)
+        + _vital("Respiratory", m["resp"], m["resp_mean"], m["resp_sd"], " /min", False, 1)
+        + _vital("Sleep", (m["sleep_min"] / 60 if m["sleep_min"] else None),
+                 (m["sleep_mean"] / 60 if m["sleep_mean"] else None),
+                 (m["sleep_sd"] / 60 if m["sleep_sd"] else None), " h", True, 1))
+
+    # hrv status
+    hs = m["hrv_status"] or "--"
+    hs_col = {"Balanced": "var(--g)", "High": "var(--teal)",
+              "Low": "var(--amber)"}.get(hs, "var(--muted)")
+    hrv_status_bar = _vital("7-day HRV", m["hrv_7d"], m["hrv_mean"], m["hrv_sd"], " ms", True, 0)
+
+    # sleep
+    stages = _stages(m["deep_min"], m["rem_min"], m["light_min"], m["awake_min"])
+    sh = (m["sleep_min"] or 0) / 60
+    eff = m["efficiency"]
+
+    # training
+    ts = m["training_status"] or "--"
+    strain = m["strain"] or 0
+    rec = m["recovery_hours"]
+
+    # trends
+    def series(key):
+        return [r[key] for r in hist]
+    trends = (
+        _trend_row("HRV", series("hrv"), " ms", 0)
+        + _trend_row("Resting HR", series("rhr"), " bpm", 0)
+        + _trend_row("Respiratory", series("resp"), "", 1)
+        + _trend_row("Sleep", series("sleep_min"), " h", 1, scale=1 / 60)
+        + _trend_row("Readiness", series("readiness"), "", 0)
+        + _trend_row("Energy", series("energy"), "", 0))
+    vo2 = f'{vo2max:.0f}' if vo2max else '--'
 
     return f"""
   <h1>Recovery</h1>
@@ -186,38 +278,71 @@ def _body(r, hist, acts, form_swims):
     <div class="hero-r">
       <h2 style="color:{col}">{label}</h2>
       <div class="drv">{drivers or ''}</div>
-      <div class="dt">{day}</div>
+      <div class="dt">{m['day']}</div>
     </div>
   </div>
+
   <div class="card">
-    <p class="lbl">Components</p>
-    {comps}
-    <p class="muted sm" style="margin:14px 0 0">HRV source: {hrv_src or '--'} &middot; sleep source: {sleep_src or '--'}</p>
+    <p class="lbl">Energy</p>
+    {_battery(m['energy'])}
+    <p class="muted sm" style="margin:10px 0 0">Woke at {round(m['energy_am'] or 0)},
+      now {round(m['energy'] or 0)} after today's load. Charges from sleep &amp; HRV, drains with training.</p>
   </div>
+
+  <div class="card">
+    <p class="lbl">Vitals &middot; last night vs your typical range</p>
+    {vitals}
+  </div>
+
+  <div class="card">
+    <p class="lbl">HRV status</p>
+    <div class="statline"><span class="pill" style="background:{hs_col}22;color:{hs_col}">{hs}</span>
+      <span class="muted sm">7-day avg {round(m['hrv_7d'] or 0)} ms vs baseline {round(m['hrv_mean'] or 0)} ms</span></div>
+    {hrv_status_bar}
+  </div>
+
+  <div class="card">
+    <p class="lbl">Sleep &middot; {sh:.1f}h{f' &middot; {round(eff)}% efficient' if eff else ''}</p>
+    {stages}
+  </div>
+
   <div class="card">
     <p class="lbl">Training load</p>
-    <div class="grid3">
-      <div><div class="k">Fitness</div><div class="v">{round(ctl)}</div></div>
-      <div><div class="k">Fatigue</div><div class="v">{round(atl)}</div></div>
-      <div><div class="k">Form</div><div class="v">{form:+.0f}</div></div>
+    <div class="statline">
+      <span class="pill" style="background:var(--teal)22;color:var(--teal)">{ts}</span>
+      <span class="muted sm">strain {strain} / 21{f' &middot; ~{round(rec)}h to recover' if rec else ''}</span>
+    </div>
+    <div class="grid3" style="margin-top:14px">
+      <div><div class="k">Fitness</div><div class="v">{round(m['ctl'] or 0)}</div></div>
+      <div><div class="k">Fatigue</div><div class="v">{round(m['atl'] or 0)}</div></div>
+      <div><div class="k">Form</div><div class="v">{(m['form'] or 0):+.0f}</div></div>
     </div>
   </div>
+
+  <div class="card">
+    <p class="lbl">Trends &middot; up to 60 days &middot; VO2max {vo2}</p>
+    {trends}
+  </div>
+
   <div class="card">
     <p class="lbl">Readiness &middot; last 45 days</p>
-    {_trend_svg(hist)}
+    {_trend_svg([(r['day'], r['readiness']) for r in hist])}
   </div>
+
   <div class="card">
     <p class="lbl">Recent activity</p>
     {_activities_html(acts)}
   </div>
-  <p class="foot">Sources: Eight Sleep + Garmin via Intervals.icu<br>Updated {datetime.now().strftime('%a %d %b, %H:%M')}</p>"""
+
+  <p class="foot">HRV/sleep source: {hrv_src} / {sleep_src}<br>
+    Eight Sleep + Garmin via Intervals.icu &middot; Updated {datetime.now().strftime('%a %d %b, %H:%M')}</p>"""
 
 
 CSS = """
   :root{--bg:#0e1116;--card:#171b22;--card2:#1e232c;--text:#e8ecf1;--muted:#8b94a3;
     --line:#272d38;--g:#37d67a;--teal:#2fc4c0;--amber:#f0b429;--red:#f0506e;}
   @media (prefers-color-scheme: light){
-    :root{--bg:#f2f4f7;--card:#fff;--card2:#f7f9fc;--text:#16202c;--muted:#67707e;--line:#e4e8ee;}}
+    :root{--bg:#f2f4f7;--card:#fff;--card2:#eef1f6;--text:#16202c;--muted:#67707e;--line:#e4e8ee;}}
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
   body{margin:0;background:var(--bg);color:var(--text);
     font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
@@ -242,10 +367,35 @@ CSS = """
   .ban-warn{background:rgba(240,180,41,.13);color:var(--amber);border:1px solid rgba(240,180,41,.3);}
   .lbl{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);
     margin:0 0 14px;font-weight:600;}
-  .cmp{margin-bottom:12px;}
-  .cmp-l{display:flex;justify-content:space-between;font-size:13px;margin-bottom:5px;}
-  .track{height:7px;background:var(--card2);border-radius:5px;overflow:hidden;}
-  .fill{height:100%;border-radius:5px;}
+  .muted{color:var(--muted);}
+  .sm{font-size:12px;}
+  .statline{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+  .pill{font-size:12px;font-weight:700;padding:4px 11px;border-radius:20px;}
+  .batt{position:relative;height:46px;background:var(--card2);border-radius:12px;overflow:hidden;}
+  .batt-fill{position:absolute;left:0;top:0;bottom:0;border-radius:12px;opacity:.4;}
+  .batt-num{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+    font-size:24px;font-weight:700;}
+  .vital{display:grid;grid-template-columns:92px 66px 1fr;align-items:center;gap:10px;
+    padding:9px 0;border-top:1px solid var(--line);}
+  .vital:first-of-type{border-top:none;}
+  .vl{font-size:13px;color:var(--muted);}
+  .vv{font-size:15px;font-weight:600;text-align:right;}
+  .vr{position:relative;height:8px;background:var(--card2);border-radius:4px;}
+  .vband{position:absolute;top:0;bottom:0;background:rgba(47,196,192,.22);border-radius:4px;}
+  .vdot{position:absolute;top:-2px;width:12px;height:12px;border-radius:50%;
+    transform:translateX(-50%);border:2px solid var(--card);}
+  .stages{display:flex;height:16px;border-radius:6px;overflow:hidden;margin-bottom:10px;}
+  .stages>div{height:100%;}
+  .legend{display:flex;flex-wrap:wrap;gap:12px;font-size:12px;color:var(--muted);}
+  .legend .lg{display:flex;align-items:center;gap:5px;}
+  .legend i{width:9px;height:9px;border-radius:2px;display:inline-block;}
+  .trow{display:grid;grid-template-columns:80px 1fr 92px;align-items:center;gap:10px;
+    padding:8px 0;border-top:1px solid var(--line);}
+  .trow:first-of-type{border-top:none;}
+  .tlbl{font-size:13px;color:var(--muted);}
+  .spk{width:100%;height:28px;display:block;}
+  .tval{font-size:14px;font-weight:600;text-align:right;}
+  .tavg{display:block;font-size:11px;color:var(--muted);font-weight:400;}
   .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;text-align:center;}
   .grid3 .k{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;}
   .grid3 .v{font-size:24px;font-weight:600;margin-top:3px;}
@@ -258,19 +408,17 @@ CSS = """
   .act-ic{font-size:22px;flex:0 0 30px;text-align:center;}
   .act-mid{display:flex;flex-direction:column;gap:2px;}
   .act-top{font-size:14px;font-weight:500;}
-  .sm{font-size:12px;}
   .struck .act-top{text-decoration:line-through;opacity:.55;}
+  .badge{font-size:10px;padding:2px 6px;border-radius:6px;margin-left:6px;vertical-align:middle;
+    font-weight:600;letter-spacing:.03em;}
+  .b-form{background:rgba(47,196,192,.16);color:var(--teal);}
+  .b-garmin{background:rgba(139,148,163,.16);color:var(--muted);}
   .chev{margin-left:auto;color:var(--muted);font-size:20px;transition:transform .15s;}
   details[open] .chev{transform:rotate(90deg);}
   .detail{display:grid;grid-template-columns:auto 1fr;gap:5px 14px;
     padding:2px 0 14px 42px;font-size:13px;}
   .dk{color:var(--muted);}
   .dv{text-align:right;}
-  .badge{font-size:10px;padding:2px 6px;border-radius:6px;margin-left:6px;vertical-align:middle;
-    font-weight:600;letter-spacing:.03em;}
-  .b-form{background:rgba(47,196,192,.16);color:var(--teal);}
-  .b-garmin{background:rgba(139,148,163,.16);color:var(--muted);}
-  .muted{color:var(--muted);}
   .foot{color:var(--muted);font-size:11px;text-align:center;margin-top:20px;line-height:1.6;}
   #lock{max-width:340px;margin:22vh auto 0;text-align:center;padding:0 20px;}
   #lock h3{font-weight:600;margin:0 0 4px;}
@@ -310,7 +458,6 @@ def _encrypt(plaintext, passphrase, iterations=200000):
 
 
 def _encrypted_page(body):
-    import json
     blob = json.dumps(_encrypt(body, env("DASHBOARD_PASSPHRASE")))
     return _head("Recovery") + f"""<body>
 <div class="wrap" id="app"></div>
@@ -332,16 +479,15 @@ async function decrypt(pass){{
 }}
 async function unlock(pass,save){{
   try{{
-    const html=await decrypt(pass);
-    document.getElementById('app').innerHTML=html;
+    document.getElementById('app').innerHTML=await decrypt(pass);
     document.getElementById('lock').style.display='none';
     if(save)try{{localStorage.setItem('rp',pass);}}catch(e){{}}
     return true;
   }}catch(e){{return false;}}
 }}
 document.getElementById('go').onclick=async()=>{{
-  const v=document.getElementById('pw').value;
-  if(!await unlock(v,true))document.getElementById('err').textContent='Wrong passphrase';
+  if(!await unlock(document.getElementById('pw').value,true))
+    document.getElementById('err').textContent='Wrong passphrase';
 }};
 document.getElementById('pw').addEventListener('keydown',e=>{{if(e.key==='Enter')document.getElementById('go').click();}});
 (async()=>{{let s=null;try{{s=localStorage.getItem('rp');}}catch(e){{}}
@@ -350,18 +496,20 @@ document.getElementById('pw').addEventListener('keydown',e=>{{if(e.key==='Enter'
 </body></html>"""
 
 
-def _plain_page(body, score):
-    return _head(f"Recovery {round(score)}") + f'<body><div class="wrap">{body}</div></body></html>'
+def _plain_page(body):
+    return _head("Recovery") + f'<body><div class="wrap">{body}</div></body></html>'
 
 
 def build(out_path=None, force_plain=False):
+    out = Path(out_path) if out_path else (DOCS / "index.html")
     con = sqlite3.connect(DB_PATH)
+    con.row_factory = sqlite3.Row
     try:
-        r = con.execute(
-            """SELECT day, score, hrv_sub, sleep_sub, rhr_sub, load_sub, debt_sub,
-                      ctl, atl, form, hrv_source, sleep_source, drivers, flags
-               FROM readiness ORDER BY day DESC LIMIT 1""").fetchone()
-        hist = con.execute("SELECT day, score FROM readiness ORDER BY day ASC").fetchall()
+        m = con.execute("SELECT * FROM metrics_daily ORDER BY day DESC LIMIT 1").fetchone()
+        rd = con.execute("SELECT * FROM readiness ORDER BY day DESC LIMIT 1").fetchone()
+        hist = con.execute(
+            """SELECT day, hrv, rhr, resp, sleep_min, readiness, energy
+               FROM metrics_daily ORDER BY day ASC""").fetchall()
         acts = con.execute(
             """SELECT a.start_time, a.sport, a.source, a.avg_hr, a.trimp, a.superseded,
                       a.distance_m, r.payload
@@ -370,24 +518,25 @@ def build(out_path=None, force_plain=False):
         form_swims = con.execute(
             """SELECT COUNT(*) FROM activity WHERE lower(sport) LIKE 'swim%'
                AND source IS NOT NULL AND source <> 'GARMIN_CONNECT'""").fetchone()[0]
+        vrow = con.execute(
+            "SELECT vo2max FROM metrics_daily WHERE vo2max IS NOT NULL ORDER BY day DESC LIMIT 1").fetchone()
     finally:
         con.close()
 
-    out = Path(out_path) if out_path else (DOCS / "index.html")
     out.parent.mkdir(parents=True, exist_ok=True)
-    if not r:
+    if not m:
         out.write_text(_head("Recovery") +
             "<body><div class='wrap'><h1>Recovery</h1><p>No data yet. Run run.py.</p></div></body></html>",
             encoding="utf-8")
         return
 
-    body = _body(r, hist, acts, form_swims)
+    body = _body(m, rd, hist, acts, form_swims, vrow["vo2max"] if vrow else None)
     passphrase = "" if force_plain else env("DASHBOARD_PASSPHRASE")
     if passphrase:
         page = _encrypted_page(body)
         print(f"Dashboard written (ENCRYPTED) -> {out}")
     else:
-        page = _plain_page(body, r[1])
+        page = _plain_page(body)
         print(f"Dashboard written (PLAINTEXT) -> {out}")
     out.write_text(page, encoding="utf-8")
 

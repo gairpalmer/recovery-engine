@@ -53,6 +53,7 @@ def parse_night(trend: dict) -> dict:
                    or _nested(trend, "sleepQualityScore", "hrv", "current")),
         "resting_hr": _nested(trend, "sleepQualityScore", "heartRate", "average"),
         "breath_rate": _nested(trend, "sleepQualityScore", "respiratoryRate", "average"),
+        "bed_temp": _nested(trend, "sleepQualityScore", "tempBedC", "average"),
     }
 
 

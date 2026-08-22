@@ -147,8 +147,44 @@ def build(con):
     wsum = (subs.notna() * wser).sum(axis=1)
     df["score"] = ((subs.fillna(0) * wser).sum(axis=1) / wsum).where(wsum > 0)
 
+    # ---- extended recovery metric suite ----
+    df["load"] = load_full
+    df["resp"] = col(es, "breath_rate")
+    df["bed_temp"] = col(es, "bed_temp")
+    df["deep_min"] = col(es, "deep_min")
+    df["rem_min"] = col(es, "rem_min")
+    df["light_min"] = col(es, "light_min")
+    df["awake_min"] = col(es, "awake_min")
+    df["efficiency"] = col(es, "efficiency")
+    df["vo2max"] = col(well, "vo2max")
+    df["steps"] = col(well, "steps")
+    df["hrv_mean"] = hrv_mean
+    df["hrv_sd"] = hrv_sd
+    df["hrv_7d"] = df["hrv"].rolling(7, min_periods=3).mean()
+    df["rhr_mean"] = rhr_mean
+    df["rhr_sd"] = rhr_sd
+    df["resp_mean"] = df["resp"].rolling(base_days, min_periods=8).mean()
+    df["resp_sd"] = df["resp"].rolling(base_days, min_periods=8).std()
+    df["temp_mean"] = df["bed_temp"].rolling(base_days, min_periods=8).mean()
+    df["temp_sd"] = df["bed_temp"].rolling(base_days, min_periods=8).std()
+    df["sleep_mean"] = df["sleep_min"].rolling(base_days, min_periods=8).mean()
+    df["sleep_sd"] = df["sleep_min"].rolling(base_days, min_periods=8).std()
+    # Energy (Body Battery style): charged by sleep + HRV, drained by the day's load
+    df["energy_am"] = (0.6 * df["sleep_sub"] + 0.4 * df["hrv_sub"]).clip(0, 100)
+    df["energy"] = (df["energy_am"] - (df["load"].fillna(0) * 0.4).clip(upper=100)).clip(lower=5)
+    df["strain"] = (21 * (1 - np.exp(-df["load"].fillna(0) / 80))).round(1)
+    df["recovery_hours"] = (df["load"].fillna(0) * 0.4
+                            * (1 + (50 - df["hrv_sub"]) / 100)).clip(0, 96).round(0)
+    df["hrv_status"] = [_hrv_status(a, b, c)
+                        for a, b, c in zip(df["hrv_7d"], df["hrv_mean"], df["hrv_sd"])]
+    ctl0 = df["ctl"].shift(7)
+    df["training_status"] = [_train_status(a, b, c)
+                             for a, b, c in zip(df["ctl"], ctl0, df["form"])]
+    df["readiness"] = df["score"]
+
     _write(con, df, div_pct)
-    print(f"  engine: readiness computed for {int(df['score'].notna().sum())} days")
+    _write_metrics(con, df)
+    print(f"  engine: readiness + metrics computed for {int(df['score'].notna().sum())} days")
 
 
 def _driver(row):
@@ -186,6 +222,61 @@ def _write(con, df, div_pct):
 
 def _r(x):
     return None if pd.isna(x) else round(float(x), 1)
+
+
+def _hrv_status(h7, mean, sd):
+    if pd.isna(h7) or pd.isna(mean) or pd.isna(sd) or sd == 0:
+        return None
+    if h7 < mean - 0.5 * sd:
+        return "Low"
+    if h7 > mean + 1.5 * sd:
+        return "High"
+    return "Balanced"
+
+
+def _train_status(ctl, ctl0, form):
+    if pd.isna(ctl) or pd.isna(ctl0):
+        return None
+    if pd.notna(form) and form < -30:
+        return "Overreaching"
+    d = ctl - ctl0
+    if d > 1.5:
+        return "Productive"
+    if d < -1.5:
+        return "Detraining"
+    return "Maintaining"
+
+
+def _cell(v):
+    if v is None:
+        return None
+    if isinstance(v, str):
+        return v
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return None if pd.isna(f) else round(f, 2)
+
+
+_METRIC_COLS = [
+    "energy", "energy_am", "strain", "recovery_hours", "training_status",
+    "hrv", "hrv_7d", "hrv_mean", "hrv_sd", "hrv_status",
+    "rhr", "rhr_mean", "rhr_sd", "resp", "resp_mean", "resp_sd",
+    "bed_temp", "temp_mean", "temp_sd", "sleep_min", "sleep_mean", "sleep_sd",
+    "sleep_score", "deep_min", "rem_min", "light_min", "awake_min", "efficiency",
+    "vo2max", "steps", "load", "ctl", "atl", "form", "readiness",
+]
+
+
+def _write_metrics(con, df):
+    con.execute("DELETE FROM metrics_daily")
+    ph = ",".join(["?"] * (len(_METRIC_COLS) + 1))
+    sql = f"INSERT OR REPLACE INTO metrics_daily (day,{','.join(_METRIC_COLS)}) VALUES ({ph})"
+    for day, row in df.iterrows():
+        if pd.isna(row.get("hrv")) and pd.isna(row.get("sleep_min")) and pd.isna(row.get("ctl")):
+            continue
+        con.execute(sql, [day] + [_cell(row.get(c)) for c in _METRIC_COLS])
 
 
 def main():
