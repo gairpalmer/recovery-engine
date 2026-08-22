@@ -1,0 +1,12 @@
+# Recovery Engine dependencies (Python 3.10+)
+garminconnect          # Garmin Connect read API (PyPI name; repo is python-garminconnect)
+requests>=2.31         # Strava API calls
+python-dotenv>=1.0     # load .env secrets
+pandas>=2.0            # EWMA baselines, load curves
+cryptography>=41       # AES-GCM encryption of the published dashboard
+
+# Eight Sleep OAuth2 client is VENDORED at project-root ./pyeight (lukas-clarke fork),
+# NOT installed from PyPI -- the PyPI `pyeight` is the abandoned 2021 pre-OAuth2 build.
+# These two are the vendored client's runtime deps:
+httpx>=0.24            # Eight Sleep OAuth token request
+python-dateutil>=2.8   # Eight Sleep timestamp parsing
