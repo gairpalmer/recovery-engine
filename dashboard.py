@@ -9,9 +9,11 @@ passphrase never enters the repo. Without it set, the page is written in plain t
 Run:  .\.venv\Scripts\python.exe dashboard.py
 """
 import base64
+import json
 import os
 import sqlite3
 from datetime import datetime
+from pathlib import Path
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -70,24 +72,85 @@ def _trend_svg(hist):
             f'role="img" aria-label="readiness trend">{"".join(bars)}</svg>')
 
 
+def _hms(s):
+    s = int(s or 0)
+    h, m, sec = s // 3600, (s % 3600) // 60, s % 60
+    return f"{h}h {m:02d}m" if h else f"{m}m {sec:02d}s"
+
+
+def _pace(spd, sport):
+    if not spd or spd <= 0:
+        return None
+    t = (sport or "").lower()
+    if t.startswith("swim"):
+        p = 100 / spd
+        return f"{int(p // 60)}:{int(p % 60):02d} /100m"
+    if t.startswith(("run", "walk")):
+        p = 1000 / spd
+        return f"{int(p // 60)}:{int(p % 60):02d} /km"
+    return None
+
+
+def _activity_detail(p, trimp):
+    """All meaningful, populated fields from the raw Intervals activity payload."""
+    rows = []
+
+    def add(label, val):
+        if val not in (None, "", 0, 0.0):
+            rows.append((label, val))
+
+    secs = p.get("moving_time") or p.get("elapsed_time")
+    add("Duration", _hms(secs) if secs else None)
+    dist = p.get("distance")
+    add("Distance", (f"{dist / 1000:.2f} km" if dist and dist >= 1000
+                     else (f"{round(dist)} m" if dist else None)))
+    add("Pace", _pace(p.get("average_speed"), p.get("type")))
+    add("Avg HR", f"{round(p['average_heartrate'])} bpm" if p.get("average_heartrate") else None)
+    add("Max HR", f"{round(p['max_heartrate'])} bpm" if p.get("max_heartrate") else None)
+    spd = p.get("average_speed")
+    add("Avg speed", f"{spd * 3.6:.1f} km/h" if spd else None)
+    add("Cadence", round(p["average_cadence"]) if p.get("average_cadence") else None)
+    add("Calories", f"{round(p['calories'])} kcal" if p.get("calories") else None)
+    add("Elevation", f"{round(p['total_elevation_gain'])} m" if p.get("total_elevation_gain") else None)
+    t = p.get("average_temp")
+    add("Avg temp", f"{t:.0f}°C" if isinstance(t, (int, float)) else None)
+    add("Our TRIMP", round(trimp) if trimp else None)
+    add("Intervals load", round(p["icu_training_load"]) if p.get("icu_training_load") else None)
+    add("Device", p.get("device_name"))
+    add("Source", p.get("source"))
+    started = p.get("start_date_local")
+    add("Started", started.replace("T", " ") if started else None)
+    return rows
+
+
 def _activities_html(acts):
     if not acts:
         return "<p class='muted'>No recent activities.</p>"
     out = []
-    for st, sport, src, ahr, trimp, sup, dist in acts:
+    for st, sport, src, ahr, trimp, sup, dist, payload in acts:
+        try:
+            p = json.loads(payload) if payload else {}
+        except (TypeError, ValueError):
+            p = {}
         is_form = src and src != "GARMIN_CONNECT"
         badge, bcls = ("FORM", "b-form") if is_form else ("Garmin", "b-garmin")
         strike = " struck" if sup else ""
         hr = f"{round(ahr)} bpm" if ahr else "--"
         load = f"load {round(trimp)}" if trimp else ""
+        drows = "".join(f'<div class="dk">{k}</div><div class="dv">{v}</div>'
+                        for k, v in _activity_detail(p, trimp))
         out.append(f"""
-        <div class="act{strike}">
-          <div class="act-ic">{_icon(sport)}</div>
-          <div class="act-mid">
-            <div class="act-top">{sport or 'Activity'} <span class="badge {bcls}">{badge}</span></div>
-            <div class="muted sm">{(st or '')[:10]} &middot; {hr} &middot; {load}</div>
-          </div>
-        </div>""")
+        <details class="act{strike}">
+          <summary>
+            <span class="act-ic">{_icon(sport)}</span>
+            <span class="act-mid">
+              <span class="act-top">{sport or 'Activity'} <span class="badge {bcls}">{badge}</span></span>
+              <span class="muted sm">{(st or '')[:10]} &middot; {hr} &middot; {load}</span>
+            </span>
+            <span class="chev">&rsaquo;</span>
+          </summary>
+          <div class="detail">{drows}</div>
+        </details>""")
     return "".join(out)
 
 
@@ -187,12 +250,22 @@ CSS = """
   .grid3 .k{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;}
   .grid3 .v{font-size:24px;font-weight:600;margin-top:3px;}
   .trend{width:100%;height:90px;display:block;}
-  .act{display:flex;align-items:center;gap:12px;padding:10px 0;border-top:1px solid var(--line);}
-  .act:first-of-type{border-top:none;}
-  .act-ic{font-size:22px;width:30px;text-align:center;}
+  details.act{border-top:1px solid var(--line);}
+  details.act:first-of-type{border-top:none;}
+  details.act summary{display:flex;align-items:center;gap:12px;padding:10px 0;cursor:pointer;
+    list-style:none;}
+  details.act summary::-webkit-details-marker{display:none;}
+  .act-ic{font-size:22px;flex:0 0 30px;text-align:center;}
+  .act-mid{display:flex;flex-direction:column;gap:2px;}
   .act-top{font-size:14px;font-weight:500;}
   .sm{font-size:12px;}
   .struck .act-top{text-decoration:line-through;opacity:.55;}
+  .chev{margin-left:auto;color:var(--muted);font-size:20px;transition:transform .15s;}
+  details[open] .chev{transform:rotate(90deg);}
+  .detail{display:grid;grid-template-columns:auto 1fr;gap:5px 14px;
+    padding:2px 0 14px 42px;font-size:13px;}
+  .dk{color:var(--muted);}
+  .dv{text-align:right;}
   .badge{font-size:10px;padding:2px 6px;border-radius:6px;margin-left:6px;vertical-align:middle;
     font-weight:600;letter-spacing:.03em;}
   .b-form{background:rgba(47,196,192,.16);color:var(--teal);}
@@ -281,7 +354,7 @@ def _plain_page(body, score):
     return _head(f"Recovery {round(score)}") + f'<body><div class="wrap">{body}</div></body></html>'
 
 
-def build():
+def build(out_path=None, force_plain=False):
     con = sqlite3.connect(DB_PATH)
     try:
         r = con.execute(
@@ -290,31 +363,38 @@ def build():
                FROM readiness ORDER BY day DESC LIMIT 1""").fetchone()
         hist = con.execute("SELECT day, score FROM readiness ORDER BY day ASC").fetchall()
         acts = con.execute(
-            """SELECT start_time, sport, source, avg_hr, trimp, superseded, distance_m
-               FROM activity ORDER BY start_time DESC LIMIT 10""").fetchall()
+            """SELECT a.start_time, a.sport, a.source, a.avg_hr, a.trimp, a.superseded,
+                      a.distance_m, r.payload
+               FROM activity a LEFT JOIN raw_pull r ON r.id = a.raw_id
+               ORDER BY a.start_time DESC LIMIT 15""").fetchall()
         form_swims = con.execute(
             """SELECT COUNT(*) FROM activity WHERE lower(sport) LIKE 'swim%'
                AND source IS NOT NULL AND source <> 'GARMIN_CONNECT'""").fetchone()[0]
     finally:
         con.close()
 
-    DOCS.mkdir(exist_ok=True)
+    out = Path(out_path) if out_path else (DOCS / "index.html")
+    out.parent.mkdir(parents=True, exist_ok=True)
     if not r:
-        (DOCS / "index.html").write_text(_head("Recovery") +
+        out.write_text(_head("Recovery") +
             "<body><div class='wrap'><h1>Recovery</h1><p>No data yet. Run run.py.</p></div></body></html>",
             encoding="utf-8")
         return
 
     body = _body(r, hist, acts, form_swims)
-    passphrase = env("DASHBOARD_PASSPHRASE")
+    passphrase = "" if force_plain else env("DASHBOARD_PASSPHRASE")
     if passphrase:
         page = _encrypted_page(body)
-        print("Dashboard written (ENCRYPTED) -> docs/index.html")
+        print(f"Dashboard written (ENCRYPTED) -> {out}")
     else:
         page = _plain_page(body, r[1])
-        print("Dashboard written (PLAINTEXT -- set DASHBOARD_PASSPHRASE before publishing) -> docs/index.html")
-    (DOCS / "index.html").write_text(page, encoding="utf-8")
+        print(f"Dashboard written (PLAINTEXT) -> {out}")
+    out.write_text(page, encoding="utf-8")
 
 
 if __name__ == "__main__":
-    build()
+    import sys
+    if len(sys.argv) > 2 and sys.argv[1] == "preview":
+        build(out_path=sys.argv[2], force_plain=True)
+    else:
+        build()
