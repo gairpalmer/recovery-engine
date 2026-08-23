@@ -190,13 +190,14 @@ def _spark_svg(vals):
             f'<polyline points="{pts}" fill="none" stroke="var(--teal)" stroke-width="1.5"/></svg>')
 
 
-def _trend_row(label, series, unit="", dp=0, scale=1.0):
+def _trend_row(label, series, unit="", dp=0, scale=1.0, mid=None):
     pts = [v * scale for v in series if v is not None]
     if not pts:
         return ""
     cur, recent = pts[-1], pts[-30:]
     avg = sum(recent) / len(recent)
-    return (f'<div class="trow"><div class="tlbl">{label}</div>'
+    attr = f' data-metric="{mid}"' if mid else ""
+    return (f'<div class="trow"{attr}><div class="tlbl">{label}</div>'
             f'<div class="tspark">{_spark_svg(pts)}</div>'
             f'<div class="tval">{cur:.{dp}f}{unit}<span class="tavg">avg {avg:.{dp}f}</span></div></div>')
 
@@ -216,12 +217,13 @@ def _readiness_trend_svg(hist):
 
 
 # -------------------------------------------------------------- small bits
-def _vital(label, value, mean, sd, unit, higher_better, dp=0):
+def _vital(label, value, mean, sd, unit, higher_better, dp=0, mid=None):
     if value is None:
         return ""
+    attr = f' data-metric="{mid}"' if mid else ""
     vs = f"{value:.{dp}f}{unit}"
     if mean is None or sd is None or sd == 0:
-        return (f'<div class="vital"><div class="vl">{label}</div>'
+        return (f'<div class="vital"{attr}><div class="vl">{label}</div>'
                 f'<div class="vv">{vs}</div><div class="vr"></div></div>')
     lo, hi = mean - sd, mean + sd
     status = "in" if lo <= value <= hi else ("high" if value > hi else "low")
@@ -236,7 +238,7 @@ def _vital(label, value, mean, sd, unit, higher_better, dp=0):
     bl, br = pos(lo), pos(hi)
     bar = (f'<div class="vr"><div class="vband" style="left:{bl:.0f}%;width:{br - bl:.0f}%">'
            f'</div><div class="vdot" style="left:{pos(value):.0f}%;background:{col}"></div></div>')
-    return f'<div class="vital"><div class="vl">{label}</div><div class="vv">{vs}</div>{bar}</div>'
+    return f'<div class="vital"{attr}><div class="vl">{label}</div><div class="vv">{vs}</div>{bar}</div>'
 
 
 def _stage_legend(m):
@@ -354,10 +356,10 @@ def _panel_today(m, rd, updated, brief, windows):
     dash = circ * (1 - (score or 0) / 100)
     sh = (m["sleep_min"] or 0) / 60
     quick = [
-        ("Energy", round(m["energy"] or 0), ""), ("Sleep", f"{sh:.1f}", "h"),
-        ("HRV", round(m["hrv"] or 0), ""), ("Strain", m["strain"] or 0, "")]
-    qh = "".join(f'<div><div class="q-v">{v}{u}</div><div class="q-k">{k}</div></div>'
-                 for k, v, u in quick)
+        ("Energy", round(m["energy"] or 0), "", "energy"), ("Sleep", f"{sh:.1f}", "h", "sleep"),
+        ("HRV", round(m["hrv"] or 0), "", "hrv"), ("Strain", m["strain"] or 0, "", "strain")]
+    qh = "".join(f'<div data-metric="{mid}"><div class="q-v">{v}{u}</div><div class="q-k">{k}</div></div>'
+                 for k, v, u, mid in quick)
     win = ""
     if windows:
         win = (f'<div class="card"><p class="lbl">Your windows today {_chip("circadian estimate")}</p>'
@@ -368,7 +370,7 @@ def _panel_today(m, rd, updated, brief, windows):
   <section class="panel" id="tab-today">
     <div class="hd"><div class="hd-t">Today</div><div class="hd-s">{updated}</div></div>
     <div class="hero">
-      <div class="ring">
+      <div class="ring" data-metric="readiness">
         <svg width="150" height="150">
           <circle cx="75" cy="75" r="54" fill="none" stroke="var(--card2)" stroke-width="11"/>
           <circle cx="75" cy="75" r="54" fill="none" stroke="{col}" stroke-width="11"
@@ -394,12 +396,12 @@ def _panel_sleep(m, es, en):
     score, sh, eff = m["sleep_score"], (m["sleep_min"] or 0) / 60, m["efficiency"]
     q, r = e("quality_score"), e("routine_score")
 
-    def bd(label, v):
+    def bd(label, v, mid):
         v = v or 0
-        return (f'<div class="bd"><div class="bd-l"><span>{label}</span><span>{round(v)}</span></div>'
-                f'<div class="track"><div class="fill" style="width:{min(100, v)}%;'
-                f'background:{band(v)[1]}"></div></div></div>')
-    breakdown = (bd("Quality", q) + bd("Routine", r)) if (q or r) else ""
+        return (f'<div class="bd" data-metric="{mid}"><div class="bd-l"><span>{label}</span>'
+                f'<span>{round(v)}</span></div><div class="track"><div class="fill" '
+                f'style="width:{min(100, v)}%;background:{band(v)[1]}"></div></div></div>')
+    breakdown = (bd("Quality", q, "quality") + bd("Routine", r, "routine")) if (q or r) else ""
 
     hrs, hrv = es.get("hr", []), es.get("hrv", [])
     hv = [v for _, v in hrs if v is not None]
@@ -413,13 +415,14 @@ def _panel_sleep(m, es, en):
 
     bio = []
 
-    def stat(label, val, unit=""):
+    def stat(label, val, unit="", mid=None):
         if val is not None:
-            bio.append(f'<div><div class="q-v">{val}{unit}</div><div class="q-k">{label}</div></div>')
-    stat("Latency", round(e("latency_min")) if e("latency_min") is not None else None, "m")
-    stat("Snoring", round(e("snore_min")) if e("snore_min") is not None else None, "m")
-    stat("Toss & turn", e("tnt"))
-    stat("Resp", round(m["resp"], 1) if m["resp"] else None, "")
+            a = f' data-metric="{mid}"' if mid else ""
+            bio.append(f'<div{a}><div class="q-v">{val}{unit}</div><div class="q-k">{label}</div></div>')
+    stat("Latency", round(e("latency_min")) if e("latency_min") is not None else None, "m", "latency")
+    stat("Snoring", round(e("snore_min")) if e("snore_min") is not None else None, "m", "snore")
+    stat("Toss & turn", e("tnt"), "", "tnt")
+    stat("Resp", round(m["resp"], 1) if m["resp"] else None, "", "resp")
     wc, bc = e("wakeup_consistency"), e("bedtime_consistency")
     sched = ""
     if wc is not None or bc is not None:
@@ -430,7 +433,7 @@ def _panel_sleep(m, es, en):
   <section class="panel hidden" id="tab-sleep">
     <div class="hd"><div class="hd-t">Sleep</div><div class="hd-s">{_chip('Eight Sleep')} asleep {asleep}, woke {wake}</div></div>
     <div class="card">
-      <div class="statline"><div class="bigscore" style="color:{band(score)[1]}">{round(score or 0)}</div>
+      <div class="statline"><div class="bigscore" data-metric="sleep_score" style="color:{band(score)[1]}">{round(score or 0)}</div>
       <div><div class="lbl" style="margin:0">Sleep score</div><div class="muted sm">{sh:.1f}h{eff_s}</div></div></div>
       <div style="margin-top:16px">{breakdown}</div>
     </div>
@@ -452,13 +455,13 @@ def _panel_body(m, bb, stress, gstamp):
     if m["gbb_wake"] is not None or m["gbb_now"] is not None:
         gbb = f'<p class="muted sm" style="margin:8px 0 0">Garmin: {round(m["gbb_wake"] or 0)} at wake &rarr; {round(m["gbb_now"] or 0)} now</p>'
     vitals = (
-        _vital("HRV", m["hrv"], m["hrv_mean"], m["hrv_sd"], " ms", True, 0)
-        + _vital("Resting HR", m["rhr"], m["rhr_mean"], m["rhr_sd"], " bpm", False, 0)
-        + _vital("Respiratory", m["resp"], m["resp_mean"], m["resp_sd"], " /min", False, 1)
+        _vital("HRV", m["hrv"], m["hrv_mean"], m["hrv_sd"], " ms", True, 0, mid="hrv")
+        + _vital("Resting HR", m["rhr"], m["rhr_mean"], m["rhr_sd"], " bpm", False, 0, mid="rhr")
+        + _vital("Respiratory", m["resp"], m["resp_mean"], m["resp_sd"], " /min", False, 1, mid="resp")
         + _vital("Sleep", (m["sleep_min"] / 60 if m["sleep_min"] else None),
                  (m["sleep_mean"] / 60 if m["sleep_mean"] else None),
-                 (m["sleep_sd"] / 60 if m["sleep_sd"] else None), " h", True, 1)
-        + _vital("Stress", m["stress"], m["stress_mean"], m["stress_sd"], "", False, 0)
+                 (m["sleep_sd"] / 60 if m["sleep_sd"] else None), " h", True, 1, mid="sleep")
+        + _vital("Stress", m["stress"], m["stress_mean"], m["stress_sd"], "", False, 0, mid="stress")
         + _vital("SpO2", m["spo2"], None, None, "%", True, 0))
     return f"""
   <section class="panel hidden" id="tab-body">
@@ -477,9 +480,9 @@ def _panel_load(m, acts):
     <div class="hd"><div class="hd-t">Load</div><div class="hd-s">{_chip('Garmin')} {_chip('FORM')}</div></div>
     <div class="card">
       <div class="statline"><span class="pill">{ts}</span>
-        <span class="muted sm">strain {m['strain'] or 0} / 21{rec}</span></div>
+        <span class="muted sm" data-metric="strain">strain {m['strain'] or 0} / 21{rec}</span></div>
       <div class="grid3" style="margin-top:14px">
-        <div><div class="k">Fitness</div><div class="v">{round(m['ctl'] or 0)}</div></div>
+        <div data-metric="ctl"><div class="k">Fitness</div><div class="v">{round(m['ctl'] or 0)}</div></div>
         <div><div class="k">Fatigue</div><div class="v">{round(m['atl'] or 0)}</div></div>
         <div><div class="k">Form</div><div class="v">{(m['form'] or 0):+.0f}</div></div>
       </div>
@@ -491,12 +494,12 @@ def _panel_load(m, acts):
 def _panel_trends(m, hist, vo2max):
     def series(key):
         return [r[key] for r in hist]
-    rows = (_trend_row("Resting HR", series("rhr"), " bpm", 0)
-            + _trend_row("Respiratory", series("resp"), "", 1)
-            + _trend_row("Sleep", series("sleep_min"), " h", 1, scale=1 / 60)
-            + _trend_row("Readiness", series("readiness"), "", 0)
-            + _trend_row("Energy", series("energy"), "", 0)
-            + _trend_row("Stress", series("stress"), "", 0))
+    rows = (_trend_row("Resting HR", series("rhr"), " bpm", 0, mid="rhr")
+            + _trend_row("Respiratory", series("resp"), "", 1, mid="resp")
+            + _trend_row("Sleep", series("sleep_min"), " h", 1, scale=1 / 60, mid="sleep")
+            + _trend_row("Readiness", series("readiness"), "", 0, mid="readiness")
+            + _trend_row("Energy", series("energy"), "", 0, mid="energy")
+            + _trend_row("Stress", series("stress"), "", 0, mid="stress"))
     vo2 = f'{vo2max:.0f}' if vo2max else '--'
     return f"""
   <section class="panel hidden" id="tab-trends">
@@ -519,7 +522,7 @@ def _nav():
         f'<span class="ni">{i}</span>{lbl}</button>' for t, i, lbl in tabs) + '</nav>'
 
 
-def _body(m, rd, hist, acts, vo2max, es, bb, stress, en):
+def _body(m, rd, hist, acts, vo2max, es, bb, stress, en, mdata):
     updated = f"Updated {datetime.now(TZ).strftime('%a %d %b, %H:%M')}"
     sh = (m["sleep_min"] or 0) / 60
     strain = m["strain"] or 0
@@ -535,7 +538,8 @@ def _body(m, rd, hist, acts, vo2max, es, bb, stress, en):
             + _panel_body(m, bb, stress, gstamp)
             + _panel_load(m, acts)
             + _panel_trends(m, hist, vo2max)
-            + _nav())
+            + _nav() + SHEET_HTML
+            + '<script type="application/json" id="mdata">' + json.dumps(mdata) + '</script>')
 
 
 CSS = """
@@ -633,6 +637,24 @@ CSS = """
     flex-direction:column;align-items:center;gap:3px;padding:4px 10px;flex:1;font-family:inherit;}
   .navbtn .ni{font-size:20px;filter:grayscale(1);opacity:.6;}
   .navbtn.active{color:var(--teal);} .navbtn.active .ni{filter:none;opacity:1;}
+  [data-metric]{cursor:pointer;}
+  .sheet{position:fixed;inset:0;z-index:40;}
+  .sheet-bg{position:absolute;inset:0;background:rgba(0,0,0,.5);}
+  .sheet-c{position:absolute;left:0;right:0;bottom:0;max-width:540px;margin:0 auto;background:var(--card);
+    border-radius:22px 22px 0 0;padding:8px 20px calc(20px + env(safe-area-inset-bottom));
+    box-shadow:0 -10px 40px rgba(0,0,0,.45);animation:up .25s ease;}
+  @keyframes up{from{transform:translateY(100%);}to{transform:none;}}
+  .grip{width:40px;height:4px;background:var(--line);border-radius:2px;margin:6px auto 16px;}
+  .sheet-title{font-size:12px;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);font-weight:600;}
+  .sheet-val{font-size:32px;font-weight:800;letter-spacing:-.02em;margin:3px 0 16px;}
+  .sv-avg{font-size:13px;font-weight:500;color:var(--muted);letter-spacing:0;}
+  .seg{display:flex;background:var(--card2);border-radius:12px;padding:3px;margin-bottom:16px;}
+  .seg button{flex:1;border:0;background:none;color:var(--muted);font-weight:600;font-size:13px;
+    padding:8px;border-radius:9px;font-family:inherit;}
+  .seg button.active{background:var(--card);color:var(--text);box-shadow:0 1px 3px rgba(0,0,0,.25);}
+  .sheet-expl{color:var(--muted);font-size:13px;line-height:1.5;margin:16px 0 18px;}
+  .sheet-close{width:100%;padding:13px;border:0;border-radius:12px;background:var(--card2);
+    color:var(--text);font-weight:600;font-size:15px;font-family:inherit;}
   #lock{max-width:340px;margin:24vh auto 0;text-align:center;padding:0 20px;}
   #lock h3{font-weight:700;margin:0 0 4px;font-size:22px;} #lock p{color:var(--muted);font-size:13px;margin:0 0 16px;}
   #lock input{width:100%;padding:13px 14px;border-radius:12px;border:1px solid var(--line);
@@ -658,6 +680,60 @@ TAB_JS = """
   };
 })();
 """
+
+MODAL_JS = """
+(function(){
+  var RANGE='d', CURID=null;
+  function md(){try{return JSON.parse(document.getElementById('mdata').textContent);}catch(e){return {};}}
+  function weekKey(d){var dt=new Date(d+'T00:00:00');var y=new Date(dt.getFullYear(),0,1);
+    var w=Math.ceil((((dt-y)/86400000)+1)/7);return dt.getFullYear()+'-W'+(w<10?'0':'')+w;}
+  function bucket(h,r){
+    if(r==='d')return h.slice(-14);
+    var b={};h.forEach(function(p){var k=(r==='m')?p[0].slice(0,7):weekKey(p[0]);(b[k]=b[k]||[]).push(p[1]);});
+    return Object.keys(b).sort().slice(-12).map(function(k){var a=b[k];
+      return [k,a.reduce(function(s,v){return s+v;},0)/a.length];});
+  }
+  function spark(pts){
+    if(pts.length<2)return '<p class="muted sm">Not enough history yet.</p>';
+    var v=pts.map(function(p){return p[1];});
+    var lo=Math.min.apply(null,v),hi=Math.max.apply(null,v),rg=(hi-lo)||1,n=pts.length,w=300,h=90;
+    var pl=pts.map(function(p,i){return (i/(n-1)*w).toFixed(1)+','+(h-(p[1]-lo)/rg*h).toFixed(1);}).join(' ');
+    return '<div class="chart"><span class="ytop">'+(Math.round(hi*10)/10)+'</span><span class="ybot">'
+      +(Math.round(lo*10)/10)+'</span><svg viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none" class="area">'
+      +'<polyline points="'+pl+'" fill="none" stroke="var(--teal)" stroke-width="2" stroke-linejoin="round"/></svg>'
+      +'<div class="xax"><span>'+pts[0][0]+'</span><span>'+pts[n-1][0]+'</span></div></div>';
+  }
+  function render(){
+    var m=md()[CURID];if(!m)return;var sh=document.getElementById('sheet');var h=m.h||[];
+    var cur=h.length?h[h.length-1][1]:null;var pts=bucket(h,RANGE);var vv=pts.map(function(p){return p[1];});
+    var avg=vv.length?vv.reduce(function(s,v){return s+v;},0)/vv.length:null;
+    var lbl={d:'14-day',w:'weekly',m:'monthly'}[RANGE];
+    sh.querySelector('.sheet-val').innerHTML=(cur!=null?(Math.round(cur*10)/10)+(m.u||''):'--')
+      +(avg!=null?' <span class="sv-avg">'+lbl+' avg '+(Math.round(avg*10)/10)+'</span>':'');
+    sh.querySelector('.sheet-chart').innerHTML=spark(pts);
+  }
+  function open(id){var m=md()[id];if(!m)return;CURID=id;var sh=document.getElementById('sheet');
+    sh.querySelector('.sheet-title').textContent=m.t;sh.querySelector('.sheet-expl').textContent=m.e||'';
+    render();sh.classList.remove('hidden');}
+  document.addEventListener('click',function(ev){
+    if(!ev.target.closest)return;
+    var t=ev.target.closest('[data-metric]');if(t){open(t.getAttribute('data-metric'));return;}
+    var seg=ev.target.closest('.seg button');
+    if(seg){RANGE=seg.getAttribute('data-r');
+      document.querySelectorAll('.seg button').forEach(function(b){b.classList.toggle('active',b===seg);});
+      render();return;}
+    if(ev.target.closest('.sheet-close')||ev.target.classList.contains('sheet-bg')){
+      document.getElementById('sheet').classList.add('hidden');}
+  });
+})();
+"""
+
+SHEET_HTML = """
+<div id="sheet" class="sheet hidden"><div class="sheet-bg"></div><div class="sheet-c">
+  <div class="grip"></div><div class="sheet-title"></div><div class="sheet-val"></div>
+  <div class="seg"><button class="active" data-r="d">Day</button><button data-r="w">Week</button><button data-r="m">Month</button></div>
+  <div class="sheet-chart"></div><div class="sheet-expl"></div>
+  <button class="sheet-close">Close</button></div></div>"""
 
 ICON = ("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'"
         "%3E%3Crect width='100' height='100' rx='22' fill='%230b0e13'/%3E%3Ctext x='50' y='68' "
@@ -702,7 +778,7 @@ def _encrypted_page(body):
               "document.getElementById('go').onclick=async()=>{if(!await unlock(document.getElementById('pw').value,true))document.getElementById('err').textContent='Wrong passphrase';};\n"
               "document.getElementById('pw').addEventListener('keydown',e=>{if(e.key==='Enter')document.getElementById('go').click();});\n"
               "(async()=>{let s=null;try{s=localStorage.getItem('rp');}catch(e){}if(s&&await unlock(s,false))return;})();\n"
-              + TAB_JS)
+              + TAB_JS + MODAL_JS)
     return _head("Recovery") + f"""<body>
 <div class="wrap" id="app"></div>
 <div id="lock"><h3>Recovery</h3><p>Enter passphrase to unlock</p>
@@ -713,7 +789,7 @@ def _encrypted_page(body):
 
 def _plain_page(body):
     return (_head("Recovery") + f'<body><div class="wrap">{body}</div>'
-            + f'<script>{TAB_JS}window.__initTabs();</script></body></html>')
+            + f'<script>{TAB_JS}{MODAL_JS}window.__initTabs();</script></body></html>')
 
 
 def _parse_es(raw):
@@ -737,6 +813,38 @@ def _parse_arr(raw, key):
     if isinstance(d, list):
         d = d[0] if d else {}
     return d.get(key) or []
+
+
+def _mdata(con):
+    """Per-metric detail + daily history for the tap-to-detail sheets."""
+    md = con.execute(
+        "SELECT day, readiness, energy, hrv, rhr, resp, sleep_min, sleep_score, strain, stress, ctl "
+        "FROM metrics_daily ORDER BY day ASC").fetchall()
+    en = con.execute(
+        "SELECT night_date, latency_min, snore_min, tnt, quality_score, routine_score "
+        "FROM eightsleep_night ORDER BY night_date ASC").fetchall()
+
+    def s(rows, dcol, col, scale=1.0):
+        return [[r[dcol], round(r[col] * scale, 2)] for r in rows if r[col] is not None]
+
+    defs = {
+        "readiness": ("Readiness", "", "How recovered you are and how hard you can train today (0-100). Driven mostly by overnight HRV vs your baseline, plus sleep, resting HR and training load.", s(md, "day", "readiness")),
+        "energy": ("Energy", "", "A Body-Battery-style reserve. Charges from sleep and HRV overnight, drains with the day's training load.", s(md, "day", "energy")),
+        "hrv": ("HRV", " ms", "Overnight heart-rate variability. Higher, relative to your own baseline, means better nervous-system recovery.", s(md, "day", "hrv")),
+        "rhr": ("Resting HR", " bpm", "Overnight resting heart rate. Lower vs baseline is better; a spike can flag stress, alcohol or illness.", s(md, "day", "rhr")),
+        "resp": ("Respiratory rate", " /min", "Overnight breaths per minute. A rise above your normal can be an early illness signal.", s(md, "day", "resp")),
+        "sleep": ("Sleep", " h", "Total time asleep last night.", s(md, "day", "sleep_min", 1 / 60)),
+        "sleep_score": ("Sleep score", "", "Eight Sleep's overall quality-of-sleep score for the night.", s(md, "day", "sleep_score")),
+        "strain": ("Strain", " /21", "How much cardiovascular load you took on that day, from your activities' heart rate.", s(md, "day", "strain")),
+        "stress": ("Stress", "", "Garmin's all-day stress, derived from HRV. Lower is calmer.", s(md, "day", "stress")),
+        "ctl": ("Fitness", "", "Chronic training load, a 42-day average. Your fitness base; it rises with consistent training.", s(md, "day", "ctl")),
+        "latency": ("Time to fall asleep", " m", "How long it took you to fall asleep after getting into bed.", s(en, "night_date", "latency_min")),
+        "snore": ("Snoring", " m", "Minutes spent snoring overnight.", s(en, "night_date", "snore_min")),
+        "tnt": ("Toss & turn", "", "Number of movements detected during the night.", s(en, "night_date", "tnt")),
+        "quality": ("Sleep quality", "", "The quality half of your sleep score: duration, stages, HRV and heart rate.", s(en, "night_date", "quality_score")),
+        "routine": ("Sleep routine", "", "The routine half of your sleep score: timing and consistency.", s(en, "night_date", "routine_score")),
+    }
+    return {k: {"t": t, "u": u, "e": e, "h": h} for k, (t, u, e, h) in defs.items()}
 
 
 def build(out_path=None, force_plain=False):
@@ -767,6 +875,7 @@ def build(out_path=None, force_plain=False):
         es = _parse_es(raw("eightsleep", "trend"))
         bb = _parse_arr(raw("garmin", "body_battery"), "bodyBatteryValuesArray")
         stress = _parse_arr(raw("garmin", "stress"), "stressValuesArray")
+        mdata = _mdata(con)
     finally:
         con.close()
 
@@ -777,7 +886,7 @@ def build(out_path=None, force_plain=False):
             encoding="utf-8")
         return
 
-    body = _body(m, rd, hist, acts, vrow["vo2max"] if vrow else None, es, bb, stress, en)
+    body = _body(m, rd, hist, acts, vrow["vo2max"] if vrow else None, es, bb, stress, en, mdata)
     passphrase = "" if force_plain else env("DASHBOARD_PASSPHRASE")
     if passphrase:
         page = _encrypted_page(body)
