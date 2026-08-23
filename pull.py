@@ -82,12 +82,57 @@ def pull_eightsleep(con, days_back):
     print(f"  Eight Sleep: {len(nights)} nights")
 
 
-def main(days_back=120):
+def pull_garmin_direct(con, days=3):
+    """Direct Garmin extras via one get_user_summary call per day (stress, Body Battery,
+    respiration, intensity, SpO2). Kept to a few recent days -- Garmin rate-limits hard.
+    Uses the cached token; fails soft so a hiccup never breaks the pipeline."""
+    email, pw = env("GARMIN_EMAIL"), env("GARMIN_PASSWORD")
+    if not email or not pw:
+        print("  Garmin direct: no creds, skipping")
+        return
+    try:
+        from connectors.garmin import connect
+        g = connect(email, pw)           # cached token; no MFA prompt in unattended runs
+    except Exception as e:               # noqa: BLE001
+        print(f"  Garmin direct: login failed ({type(e).__name__}: {e})")
+        return
+    n = 0
+    for i in range(days):
+        d = (date.today() - timedelta(days=i)).isoformat()
+        try:
+            s = g.get_user_summary(d)
+        except Exception as e:           # noqa: BLE001
+            print(f"  Garmin {d}: {type(e).__name__}")
+            continue
+        if not isinstance(s, dict):
+            continue
+        rid = _raw(con, "garmin", "summary", d, s)
+        con.execute("""INSERT OR REPLACE INTO garmin_extra
+            (day, stress_avg, stress_max, stress_qualifier, gbb_wake, gbb_recent,
+             gbb_high, gbb_low, gbb_charged, gbb_drained, resp_waking,
+             intensity_mod, intensity_vig, calories, floors, spo2_avg, spo2_low,
+             resting_hr, steps, raw_id)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (d, s.get("averageStressLevel"), s.get("maxStressLevel"), s.get("stressQualifier"),
+             s.get("bodyBatteryAtWakeTime"), s.get("bodyBatteryMostRecentValue"),
+             s.get("bodyBatteryHighestValue"), s.get("bodyBatteryLowestValue"),
+             s.get("bodyBatteryChargedValue"), s.get("bodyBatteryDrainedValue"),
+             s.get("avgWakingRespirationValue"),
+             s.get("moderateIntensityMinutes"), s.get("vigorousIntensityMinutes"),
+             s.get("totalKilocalories"), s.get("floorsAscended"),
+             s.get("averageSpo2"), s.get("lowestSpo2"),
+             s.get("restingHeartRate"), s.get("totalSteps"), rid))
+        n += 1
+    print(f"  Garmin direct: {n} days")
+
+
+def main(days_back=60, garmin_days=3):
     con = sqlite3.connect(DB_PATH)
     try:
         print("Pulling...")
         pull_intervals(con, days_back)
         pull_eightsleep(con, min(days_back, 60))
+        pull_garmin_direct(con, garmin_days)
         con.commit()
     finally:
         con.close()
@@ -95,4 +140,4 @@ def main(days_back=120):
 
 
 if __name__ == "__main__":
-    main(int(sys.argv[1]) if len(sys.argv) > 1 else 120)
+    main(int(sys.argv[1]) if len(sys.argv) > 1 else 60)

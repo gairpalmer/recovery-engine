@@ -5,7 +5,7 @@ Set-Location $root
 New-Item -ItemType Directory -Force -Path "$root\logs" | Out-Null
 Start-Transcript -Path "$root\logs\daily.log" -Append | Out-Null
 try {
-    & "$root\.venv\Scripts\python.exe" run.py 120
+    & "$root\.venv\Scripts\python.exe" run.py 60
     & "$root\.venv\Scripts\python.exe" dashboard.py
     git add docs/index.html
     git commit -m ("daily update {0}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm'))

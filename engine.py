@@ -88,8 +88,9 @@ def build(con):
         con).set_index("day")["load"]
     well = pd.read_sql_query("SELECT * FROM wellness_daily", con).set_index("day")
     es = pd.read_sql_query("SELECT * FROM eightsleep_night", con).set_index("night_date")
+    gext = pd.read_sql_query("SELECT * FROM garmin_extra", con).set_index("day")
 
-    days = sorted(set(well.index) | set(es.index) | set(load.index))
+    days = sorted(set(well.index) | set(es.index) | set(load.index) | set(gext.index))
     if not days:
         print("  engine: no data to compute")
         return
@@ -158,6 +159,16 @@ def build(con):
     df["efficiency"] = col(es, "efficiency")
     df["vo2max"] = col(well, "vo2max")
     df["steps"] = col(well, "steps")
+    df["stress"] = col(gext, "stress_avg")
+    df["stress_qualifier"] = col(gext, "stress_qualifier")
+    df["stress_mean"] = df["stress"].rolling(base_days, min_periods=5).mean()
+    df["stress_sd"] = df["stress"].rolling(base_days, min_periods=5).std()
+    df["gbb_wake"] = col(gext, "gbb_wake")
+    df["gbb_now"] = col(gext, "gbb_recent")
+    df["gbb_high"] = col(gext, "gbb_high")
+    df["gbb_low"] = col(gext, "gbb_low")
+    df["intensity_min"] = col(gext, "intensity_mod").fillna(0) + col(gext, "intensity_vig").fillna(0)
+    df["spo2"] = col(gext, "spo2_avg")
     df["hrv_mean"] = hrv_mean
     df["hrv_sd"] = hrv_sd
     df["hrv_7d"] = df["hrv"].rolling(7, min_periods=3).mean()
@@ -265,7 +276,9 @@ _METRIC_COLS = [
     "rhr", "rhr_mean", "rhr_sd", "resp", "resp_mean", "resp_sd",
     "bed_temp", "temp_mean", "temp_sd", "sleep_min", "sleep_mean", "sleep_sd",
     "sleep_score", "deep_min", "rem_min", "light_min", "awake_min", "efficiency",
-    "vo2max", "steps", "load", "ctl", "atl", "form", "readiness",
+    "vo2max", "steps", "stress", "stress_mean", "stress_sd", "stress_qualifier",
+    "gbb_wake", "gbb_now", "gbb_high", "gbb_low", "intensity_min", "spo2",
+    "load", "ctl", "atl", "form", "readiness",
 ]
 
 

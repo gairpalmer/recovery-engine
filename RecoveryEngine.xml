@@ -5,8 +5,13 @@
   </RegistrationInfo>
   <Triggers>
     <CalendarTrigger>
-      <StartBoundary>2026-08-23T09:00:00</StartBoundary>
+      <StartBoundary>2026-08-24T08:00:00</StartBoundary>
       <Enabled>true</Enabled>
+      <Repetition>
+        <Interval>PT2H</Interval>
+        <Duration>PT14H</Duration>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
       <ScheduleByDay>
         <DaysInterval>1</DaysInterval>
       </ScheduleByDay>

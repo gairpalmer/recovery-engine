@@ -233,7 +233,9 @@ def _body(m, rd, hist, acts, form_swims, vo2max):
         + _vital("Respiratory", m["resp"], m["resp_mean"], m["resp_sd"], " /min", False, 1)
         + _vital("Sleep", (m["sleep_min"] / 60 if m["sleep_min"] else None),
                  (m["sleep_mean"] / 60 if m["sleep_mean"] else None),
-                 (m["sleep_sd"] / 60 if m["sleep_sd"] else None), " h", True, 1))
+                 (m["sleep_sd"] / 60 if m["sleep_sd"] else None), " h", True, 1)
+        + _vital("Stress", m["stress"], m["stress_mean"], m["stress_sd"], "", False, 0)
+        + _vital("SpO2", m["spo2"], None, None, "%", True, 0))
 
     # hrv status
     hs = m["hrv_status"] or "--"
@@ -260,8 +262,13 @@ def _body(m, rd, hist, acts, form_swims, vo2max):
         + _trend_row("Respiratory", series("resp"), "", 1)
         + _trend_row("Sleep", series("sleep_min"), " h", 1, scale=1 / 60)
         + _trend_row("Readiness", series("readiness"), "", 0)
-        + _trend_row("Energy", series("energy"), "", 0))
+        + _trend_row("Energy", series("energy"), "", 0)
+        + _trend_row("Stress", series("stress"), "", 0))
     vo2 = f'{vo2max:.0f}' if vo2max else '--'
+    gbb_line = ""
+    if m["gbb_wake"] is not None or m["gbb_now"] is not None:
+        gbb_line = ('<p class="muted sm" style="margin:6px 0 0">Garmin Body Battery: '
+                    f'{round(m["gbb_wake"] or 0)} at wake &rarr; {round(m["gbb_now"] or 0)} now</p>')
 
     return f"""
   <h1>Recovery</h1>
@@ -287,6 +294,7 @@ def _body(m, rd, hist, acts, form_swims, vo2max):
     {_battery(m['energy'])}
     <p class="muted sm" style="margin:10px 0 0">Woke at {round(m['energy_am'] or 0)},
       now {round(m['energy'] or 0)} after today's load. Charges from sleep &amp; HRV, drains with training.</p>
+    {gbb_line}
   </div>
 
   <div class="card">
@@ -508,7 +516,7 @@ def build(out_path=None, force_plain=False):
         m = con.execute("SELECT * FROM metrics_daily ORDER BY day DESC LIMIT 1").fetchone()
         rd = con.execute("SELECT * FROM readiness ORDER BY day DESC LIMIT 1").fetchone()
         hist = con.execute(
-            """SELECT day, hrv, rhr, resp, sleep_min, readiness, energy
+            """SELECT day, hrv, rhr, resp, sleep_min, readiness, energy, stress
                FROM metrics_daily ORDER BY day ASC""").fetchall()
         acts = con.execute(
             """SELECT a.start_time, a.sport, a.source, a.avg_hr, a.trimp, a.superseded,

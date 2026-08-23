@@ -79,6 +79,30 @@ CREATE TABLE IF NOT EXISTS readiness (
     computed_at  TEXT
 );
 
+-- Direct-Garmin daily extras (one get_user_summary call/day): stress, Body Battery, etc.
+CREATE TABLE IF NOT EXISTS garmin_extra (
+    day              TEXT PRIMARY KEY,
+    stress_avg       REAL,
+    stress_max       REAL,
+    stress_qualifier TEXT,
+    gbb_wake         REAL,
+    gbb_recent       REAL,
+    gbb_high         REAL,
+    gbb_low          REAL,
+    gbb_charged      REAL,
+    gbb_drained      REAL,
+    resp_waking      REAL,
+    intensity_mod    INTEGER,
+    intensity_vig    INTEGER,
+    calories         REAL,
+    floors           REAL,
+    spo2_avg         REAL,
+    spo2_low         REAL,
+    resting_hr       REAL,
+    steps            INTEGER,
+    raw_id           INTEGER REFERENCES raw_pull(id)
+);
+
 -- Full recovery metric suite (vitals ranges, HRV status, energy, strain, trends)
 CREATE TABLE IF NOT EXISTS metrics_daily (
     day             TEXT PRIMARY KEY,
@@ -95,6 +119,9 @@ CREATE TABLE IF NOT EXISTS metrics_daily (
     sleep_score     REAL, deep_min REAL, rem_min REAL, light_min REAL, awake_min REAL,
     efficiency      REAL,
     vo2max          REAL, steps INTEGER,
+    stress          REAL, stress_mean REAL, stress_sd REAL, stress_qualifier TEXT,
+    gbb_wake        REAL, gbb_now REAL, gbb_high REAL, gbb_low REAL,
+    intensity_min   INTEGER, spo2 REAL,
     load            REAL, ctl REAL, atl REAL, form REAL,
     readiness       REAL
 );
