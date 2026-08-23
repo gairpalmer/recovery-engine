@@ -123,7 +123,15 @@ def pull_garmin_direct(con, days=3):
              s.get("averageSpo2"), s.get("lowestSpo2"),
              s.get("restingHeartRate"), s.get("totalSteps"), rid))
         n += 1
-    print(f"  Garmin direct: {n} days")
+    # intraday arrays for today only, for the Body Battery / stress curves
+    today = date.today().isoformat()
+    for kind, fn in (("body_battery", lambda: g.get_body_battery(today, today)),
+                     ("stress", lambda: g.get_all_day_stress(today))):
+        try:
+            _raw(con, "garmin", kind, today, fn())
+        except Exception as e:  # noqa: BLE001
+            print(f"  Garmin {kind}: {type(e).__name__}")
+    print(f"  Garmin direct: {n} days + intraday")
 
 
 def main(days_back=60, garmin_days=3):
