@@ -38,3 +38,11 @@ def activities(api_key: str, oldest: str, newest: str, athlete: str = "0") -> li
                      headers=_HEADERS, auth=_auth(api_key), timeout=30)
     r.raise_for_status()
     return r.json()
+
+
+def streams(api_key: str, activity_id: str, types: str = "heartrate,time") -> list[dict[str, Any]]:
+    """Per-sample streams for one activity (list of {type, data}). For in-workout curves."""
+    r = requests.get(f"{BASE}/activity/{activity_id}/streams",
+                     params={"types": types}, headers=_HEADERS, auth=_auth(api_key), timeout=30)
+    r.raise_for_status()
+    return r.json()

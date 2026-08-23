@@ -58,6 +58,24 @@ def pull_intervals(con, days_back):
              a.get("icu_training_load"), rid))
     print(f"  Intervals activities: {len(acts)}")
 
+    # per-activity HR streams for in-workout curves (cached; a few new per run)
+    pulled = 0
+    for a in acts:
+        if pulled >= 6:
+            break
+        aid = a.get("id")
+        if not aid or con.execute(
+                "SELECT 1 FROM raw_pull WHERE source='intervals' AND kind='stream' AND ref_date=? LIMIT 1",
+                (aid,)).fetchone():
+            continue
+        try:
+            _raw(con, "intervals", "stream", aid, intervals.streams(key, aid))
+            pulled += 1
+        except Exception:  # noqa: BLE001
+            pass
+    if pulled:
+        print(f"  Intervals streams: +{pulled}")
+
 
 def pull_eightsleep(con, days_back):
     email, pw = env("EIGHTSLEEP_EMAIL"), env("EIGHTSLEEP_PASSWORD")
@@ -135,6 +153,21 @@ def pull_garmin_direct(con, days=3):
             _raw(con, "garmin", kind, today, fn())
         except Exception as e:  # noqa: BLE001
             print(f"  Garmin {kind}: {type(e).__name__}")
+    # Garmin's own HRV summary (second opinion) and all-day HR curve
+    try:
+        summ = (g.get_hrv_data(today) or {}).get("hrvSummary") or {}
+        if summ:
+            bl = summ.get("baseline") or {}
+            con.execute("UPDATE garmin_extra SET g_hrv=?, g_hrv_status=?, g_hrv_low=?, g_hrv_high=? "
+                        "WHERE day=?",
+                        (summ.get("lastNightAvg"), summ.get("status"),
+                         bl.get("balancedLow"), bl.get("balancedUpper"), today))
+    except Exception as e:  # noqa: BLE001
+        print(f"  Garmin hrv: {type(e).__name__}")
+    try:
+        _raw(con, "garmin", "heart_rates", today, g.get_heart_rates(today))
+    except Exception as e:  # noqa: BLE001
+        print(f"  Garmin heart_rates: {type(e).__name__}")
     print(f"  Garmin direct: {n} days + intraday")
 
 

@@ -295,11 +295,11 @@ def _activity_detail(p, trimp):
     return rows
 
 
-def _activities_html(acts):
+def _activities_html(acts, streams, hrmax):
     if not acts:
         return "<p class='muted sm'>No recent activities.</p>"
     out = []
-    for st, sport, src, ahr, trimp, sup, dist, payload in acts:
+    for aid, st, sport, src, ahr, trimp, sup, dist, payload in acts:
         try:
             p = json.loads(payload) if payload else {}
         except (TypeError, ValueError):
@@ -311,13 +311,20 @@ def _activities_html(acts):
         load = f"load {round(trimp)}" if trimp else ""
         drows = "".join(f'<div class="dk">{k}</div><div class="dv">{v}</div>'
                         for k, v in _activity_detail(p, trimp))
+        stream = streams.get(aid) or []
+        curve = ""
+        if len(stream) > 5:
+            series = [(i, v) for i, v in enumerate(stream)]
+            curve = (f'<p class="lbl" style="margin:10px 0 8px">In-workout heart rate</p>'
+                     f'{_axis(_line(series, C_HR), round(max(stream)), round(min(stream)), "", "", " bpm")}'
+                     f'{_zones(stream, hrmax)}')
         out.append(f"""
         <details class="act{strike}"><summary>
           <span class="act-ic">{_icon(sport)}</span>
           <span class="act-mid"><span class="act-top">{sport or 'Activity'} <span class="badge {bcls}">{badge}</span></span>
           <span class="muted sm">{_clock(p.get('start_date_local')) or (st or '')[:10]} &middot; {hr} &middot; {load}</span></span>
           <span class="chev">&rsaquo;</span></summary>
-          <div class="detail">{drows}</div></details>""")
+          <div class="detail">{drows}</div>{curve}</details>""")
     return "".join(out)
 
 
@@ -445,7 +452,7 @@ def _panel_sleep(m, es, en):
   </section>'''
 
 
-def _panel_body(m, bb, stress, gstamp):
+def _panel_body(m, bb, stress, gstamp, ge, hr_allday):
     bb_c = (_axis(_area(bb, C_EN, "bbg"), 100, 0, _clock_ms(bb[0][0]), _clock_ms(bb[-1][0]))
             if bb else "<p class='muted sm'>No Body Battery data yet.</p>")
     sp = [(x, y) for x, y in stress if y is not None and y >= 0]
@@ -463,16 +470,35 @@ def _panel_body(m, bb, stress, gstamp):
                  (m["sleep_sd"] / 60 if m["sleep_sd"] else None), " h", True, 1, mid="sleep")
         + _vital("Stress", m["stress"], m["stress_mean"], m["stress_sd"], "", False, 0, mid="stress")
         + _vital("SpO2", m["spo2"], None, None, "%", True, 0))
+    ghrv = ""
+    if ge is not None and ge["g_hrv"] is not None:
+        stt = (ge["g_hrv_status"] or "").title()
+        gcol = "var(--g)" if stt == "Balanced" else "var(--amber)"
+        rng = (f' &middot; balanced {round(ge["g_hrv_low"] or 0)}-{round(ge["g_hrv_high"] or 0)} ms'
+               if ge["g_hrv_low"] else "")
+        ghrv = (f'<div class="card"><p class="lbl">Garmin HRV {_chip("cross-check")}</p>'
+                f'<div class="statline"><div class="bigscore" style="color:{gcol}">{round(ge["g_hrv"])}'
+                f'<span style="font-size:14px;color:var(--muted)"> ms</span></div>'
+                f'<span class="pill" style="background:var(--card2);color:{gcol}">{stt}</span></div>'
+                f'<p class="muted sm" style="margin:8px 0 0">Garmin\'s own overnight HRV{rng}. '
+                f'Ours (Eight Sleep) reads {round(m["hrv"] or 0)} ms; the two devices measure it differently.</p></div>')
+    hrall = ""
+    vv = [v for _, v in hr_allday if v] if hr_allday else []
+    if len(vv) > 2:
+        hrall = (f'<div class="card"><p class="lbl">All-day heart rate {_chip("Garmin")}</p>'
+                 f'{_axis(_area([(x, y) for x, y in hr_allday if y], C_HR, "hra", ymin=max(0, min(vv) - 5), ymax=max(vv) + 5), round(max(vv)), round(min(vv)), _clock_ms(hr_allday[0][0]), _clock_ms(hr_allday[-1][0]), " bpm")}</div>')
     return f"""
   <section class="panel hidden" id="tab-body">
     <div class="hd"><div class="hd-t">Body</div><div class="hd-s">{_chip('Garmin')} {gstamp}</div></div>
     <div class="card"><p class="lbl">Body Battery &middot; energy through the day</p>{bb_c}{gbb}</div>
+    {hrall}
     <div class="card"><p class="lbl">Stress</p>{st_c}</div>
+    {ghrv}
     <div class="card"><p class="lbl">Vitals vs your typical range</p>{vitals}</div>
   </section>"""
 
 
-def _panel_load(m, acts):
+def _panel_load(m, acts, streams, hrmax):
     ts = m["training_status"] or "--"
     rec = f' &middot; ~{round(m["recovery_hours"])}h to recover' if m["recovery_hours"] else ""
     return f"""
@@ -487,7 +513,7 @@ def _panel_load(m, acts):
         <div><div class="k">Form</div><div class="v">{(m['form'] or 0):+.0f}</div></div>
       </div>
     </div>
-    <div class="card"><p class="lbl">Recent activity</p>{_activities_html(acts)}</div>
+    <div class="card"><p class="lbl">Recent activity</p>{_activities_html(acts, streams, hrmax)}</div>
   </section>"""
 
 
@@ -522,7 +548,7 @@ def _nav():
         f'<span class="ni">{i}</span>{lbl}</button>' for t, i, lbl in tabs) + '</nav>'
 
 
-def _body(m, rd, hist, acts, vo2max, es, bb, stress, en, mdata):
+def _body(m, rd, hist, acts, vo2max, es, bb, stress, en, mdata, ge, hr_allday, streams, hr_max):
     updated = f"Updated {datetime.now(TZ).strftime('%a %d %b, %H:%M')}"
     sh = (m["sleep_min"] or 0) / 60
     strain = m["strain"] or 0
@@ -535,8 +561,8 @@ def _body(m, rd, hist, acts, vo2max, es, bb, stress, en, mdata):
     windows = _windows(es)
     return (_panel_today(m, rd, updated, brief, windows)
             + _panel_sleep(m, es, en)
-            + _panel_body(m, bb, stress, gstamp)
-            + _panel_load(m, acts)
+            + _panel_body(m, bb, stress, gstamp, ge, hr_allday)
+            + _panel_load(m, acts, streams, hr_max)
             + _panel_trends(m, hist, vo2max)
             + _nav() + SHEET_HTML
             + '<script type="application/json" id="mdata">' + json.dumps(mdata) + '</script>')
@@ -815,6 +841,36 @@ def _parse_arr(raw, key):
     return d.get(key) or []
 
 
+def _parse_stream(raw):
+    try:
+        d = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    for s in (d if isinstance(d, list) else []):
+        if s.get("type") == "heartrate":
+            return [v for v in (s.get("data") or []) if v]
+    return []
+
+
+def _zones(hr, hrmax):
+    if not hr or not hrmax:
+        return ""
+    counts = [0] * 5
+    for v in hr:
+        p = v / hrmax * 100
+        z = 0 if p < 60 else 1 if p < 70 else 2 if p < 80 else 3 if p < 90 else 4
+        counts[z] += 1
+    total = sum(counts) or 1
+    cols = ["#3ba0c4", "#37d67a", "#f0b429", "#f0506e", "#8b5cf6"]
+    names = ["Z1 easy", "Z2 steady", "Z3 tempo", "Z4 hard", "Z5 max"]
+    segs = "".join(f'<div style="width:{c / total * 100:.1f}%;background:{cols[i]}"></div>'
+                   for i, c in enumerate(counts))
+    legend = "".join(f'<span class="lg"><i style="background:{cols[i]}"></i>{names[i]} {round(c / total * 100)}%</span>'
+                     for i, c in enumerate(counts) if c)
+    return (f'<div class="stages" style="height:12px;margin-top:10px">{segs}</div>'
+            f'<div class="legend" style="margin-top:8px">{legend}</div>')
+
+
 def _mdata(con):
     """Per-metric detail + daily history for the tap-to-detail sheets."""
     md = con.execute(
@@ -858,7 +914,7 @@ def build(out_path=None, force_plain=False):
             """SELECT day, hrv, rhr, resp, sleep_min, readiness, energy, stress
                FROM metrics_daily ORDER BY day ASC""").fetchall()
         acts = con.execute(
-            """SELECT a.start_time, a.sport, a.source, a.avg_hr, a.trimp, a.superseded,
+            """SELECT a.id, a.start_time, a.sport, a.source, a.avg_hr, a.trimp, a.superseded,
                       a.distance_m, r.payload
                FROM activity a LEFT JOIN raw_pull r ON r.id = a.raw_id
                ORDER BY a.start_time DESC LIMIT 15""").fetchall()
@@ -875,6 +931,15 @@ def build(out_path=None, force_plain=False):
         es = _parse_es(raw("eightsleep", "trend"))
         bb = _parse_arr(raw("garmin", "body_battery"), "bodyBatteryValuesArray")
         stress = _parse_arr(raw("garmin", "stress"), "stressValuesArray")
+        ge = con.execute("SELECT * FROM garmin_extra ORDER BY day DESC LIMIT 1").fetchone()
+        hr_allday = _parse_arr(raw("garmin", "heart_rates"), "heartRateValues")
+        streams = {}
+        for a in acts:
+            sr = con.execute("SELECT payload FROM raw_pull WHERE source='intervals' AND kind='stream' "
+                             "AND ref_date=? ORDER BY id DESC LIMIT 1", (a["id"],)).fetchone()
+            if sr:
+                streams[a["id"]] = _parse_stream(sr[0])
+        hr_max = float(dict(con.execute("SELECT key, value FROM settings").fetchall()).get("hr_max", 185))
         mdata = _mdata(con)
     finally:
         con.close()
@@ -886,7 +951,8 @@ def build(out_path=None, force_plain=False):
             encoding="utf-8")
         return
 
-    body = _body(m, rd, hist, acts, vrow["vo2max"] if vrow else None, es, bb, stress, en, mdata)
+    body = _body(m, rd, hist, acts, vrow["vo2max"] if vrow else None, es, bb, stress, en, mdata,
+                 ge, hr_allday, streams, hr_max)
     passphrase = "" if force_plain else env("DASHBOARD_PASSPHRASE")
     if passphrase:
         page = _encrypted_page(body)

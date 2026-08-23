@@ -108,6 +108,10 @@ CREATE TABLE IF NOT EXISTS garmin_extra (
     spo2_low         REAL,
     resting_hr       REAL,
     steps            INTEGER,
+    g_hrv            REAL,
+    g_hrv_status     TEXT,
+    g_hrv_low        REAL,
+    g_hrv_high       REAL,
     raw_id           INTEGER REFERENCES raw_pull(id)
 );
 
