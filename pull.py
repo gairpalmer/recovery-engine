@@ -75,9 +75,13 @@ def pull_eightsleep(con, days_back):
         rid = _raw(con, "eightsleep", "trend", p["night_date"], raw)
         con.execute("""INSERT OR REPLACE INTO eightsleep_night
             (night_date, sleep_score, total_sleep_min, deep_min, rem_min, light_min,
-             awake_min, efficiency, hrv_ms, resting_hr, breath_rate, bed_temp, raw_id)
+             awake_min, efficiency, hrv_ms, resting_hr, breath_rate, bed_temp,
+             latency_min, snore_min, snore_pct, tnt, quality_score, routine_score,
+             wakeup_consistency, bedtime_consistency, raw_id)
             VALUES (:night_date,:sleep_score,:total_sleep_min,:deep_min,:rem_min,
-             :light_min,:awake_min,:efficiency,:hrv_ms,:resting_hr,:breath_rate,:bed_temp,:raw_id)""",
+             :light_min,:awake_min,:efficiency,:hrv_ms,:resting_hr,:breath_rate,:bed_temp,
+             :latency_min,:snore_min,:snore_pct,:tnt,:quality_score,:routine_score,
+             :wakeup_consistency,:bedtime_consistency,:raw_id)""",
             {**p, "raw_id": rid})
     print(f"  Eight Sleep: {len(nights)} nights")
 

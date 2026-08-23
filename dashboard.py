@@ -12,7 +12,7 @@ import base64
 import json
 import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -59,8 +59,38 @@ def _clock(iso):
         return ""
 
 
+def _clock_ms(ms):
+    try:
+        return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).astimezone(TZ).strftime("%H:%M")
+    except (ValueError, TypeError, OSError):
+        return ""
+
+
 def _chip(text):
     return f'<span class="chip">{text}</span>'
+
+
+def _axis(svg, ytop="", ybot="", xl="", xr="", unit=""):
+    yt = f"{ytop}{unit}" if ytop != "" else ""
+    yb = f"{ybot}{unit}" if ybot != "" else ""
+    xax = (f'<div class="xax"><span>{xl}</span><span>{xr}</span></div>'
+           if (xl or xr) else "")
+    return (f'<div class="chart"><span class="ytop">{yt}</span>'
+            f'<span class="ybot">{yb}</span>{svg}{xax}</div>')
+
+
+def _windows(es):
+    """Circadian best-training / best-focus windows from the actual wake time."""
+    try:
+        wt = datetime.fromisoformat(es["wake"].replace("Z", "+00:00")).astimezone(TZ)
+        wt = wt.replace(minute=0, second=0, microsecond=0)
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return None
+
+    def w(a, b):
+        return (f"{(wt + timedelta(hours=a)).strftime('%H:%M')}"
+                f"–{(wt + timedelta(hours=b)).strftime('%H:%M')}")
+    return {"focus": w(2, 4), "train": w(10, 12), "dip": w(5, 7)}
 
 
 # -------------------------------------------------------------- charts
@@ -317,7 +347,7 @@ def _insights(m, rd):
 
 
 # -------------------------------------------------------------- panels
-def _panel_today(m, rd, updated, brief):
+def _panel_today(m, rd, updated, brief, windows):
     score = m["readiness"]
     label, col = band(score)
     circ = 2 * 3.14159 * 54
@@ -328,6 +358,12 @@ def _panel_today(m, rd, updated, brief):
         ("HRV", round(m["hrv"] or 0), ""), ("Strain", m["strain"] or 0, "")]
     qh = "".join(f'<div><div class="q-v">{v}{u}</div><div class="q-k">{k}</div></div>'
                  for k, v, u in quick)
+    win = ""
+    if windows:
+        win = (f'<div class="card"><p class="lbl">Your windows today {_chip("circadian estimate")}</p>'
+               f'<div class="win"><span class="wi">\U0001F3CB️</span><span class="wl">Best training</span><b>{windows["train"]}</b></div>'
+               f'<div class="win"><span class="wi">\U0001F9E0</span><span class="wl">Best focus</span><b>{windows["focus"]}</b></div>'
+               f'<div class="win"><span class="wi">\U0001F634</span><span class="wl">Afternoon dip</span><b>{windows["dip"]}</b></div></div>')
     return f"""
   <section class="panel" id="tab-today">
     <div class="hd"><div class="hd-t">Today</div><div class="hd-s">{updated}</div></div>
@@ -344,35 +380,74 @@ def _panel_today(m, rd, updated, brief):
       <div class="brief">{brief}</div>
     </div>
     <div class="qgrid">{qh}</div>
+    {win}
     <p class="lbl">Insights</p>
     {_insights(m, rd)}
   </section>"""
 
 
-def _panel_sleep(m, es):
+def _panel_sleep(m, es, en):
+    def e(k):
+        return en[k] if en is not None else None
+
     asleep, wake = _clock(es.get("asleep")), _clock(es.get("wake"))
-    when = f"asleep {asleep}, woke {wake}" if asleep and wake else "last night"
-    sh = (m["sleep_min"] or 0) / 60
-    eff = f" &middot; {round(m['efficiency'])}% efficient" if m["efficiency"] else ""
-    hyp = _hypnogram(es.get("stages", [])) if es.get("stages") else "<p class='muted sm'>No stage data.</p>"
-    hr_c = _line(es.get("hr", []), C_HR) if es.get("hr") else ""
-    hrv_c = _line(es.get("hrv", []), C_HRV) if es.get("hrv") else ""
-    return f"""
+    score, sh, eff = m["sleep_score"], (m["sleep_min"] or 0) / 60, m["efficiency"]
+    q, r = e("quality_score"), e("routine_score")
+
+    def bd(label, v):
+        v = v or 0
+        return (f'<div class="bd"><div class="bd-l"><span>{label}</span><span>{round(v)}</span></div>'
+                f'<div class="track"><div class="fill" style="width:{min(100, v)}%;'
+                f'background:{band(v)[1]}"></div></div></div>')
+    breakdown = (bd("Quality", q) + bd("Routine", r)) if (q or r) else ""
+
+    hrs, hrv = es.get("hr", []), es.get("hrv", [])
+    hv = [v for _, v in hrs if v is not None]
+    vv = [v for _, v in hrv if v is not None]
+    hr_c = (_axis(_line(hrs, C_HR), round(max(hv)), round(min(hv)), _clock(hrs[0][0]),
+                  _clock(hrs[-1][0]), " bpm") if hv else "<p class='muted sm'>No data.</p>")
+    hrv_c = (_axis(_line(hrv, C_HRV), round(max(vv)), round(min(vv)), _clock(hrv[0][0]),
+                   _clock(hrv[-1][0]), " ms") if vv else "<p class='muted sm'>No data.</p>")
+    hyp = (_axis(_hypnogram(es.get("stages", [])), "Awake", "Deep", asleep, wake)
+           if es.get("stages") else "<p class='muted sm'>No stage data.</p>")
+
+    bio = []
+
+    def stat(label, val, unit=""):
+        if val is not None:
+            bio.append(f'<div><div class="q-v">{val}{unit}</div><div class="q-k">{label}</div></div>')
+    stat("Latency", round(e("latency_min")) if e("latency_min") is not None else None, "m")
+    stat("Snoring", round(e("snore_min")) if e("snore_min") is not None else None, "m")
+    stat("Toss & turn", e("tnt"))
+    stat("Resp", round(m["resp"], 1) if m["resp"] else None, "")
+    wc, bc = e("wakeup_consistency"), e("bedtime_consistency")
+    sched = ""
+    if wc is not None or bc is not None:
+        sched = (f'<p class="muted sm" style="margin:12px 0 0">Schedule &middot; wake consistency '
+                 f'{round(wc or 0)}/100, bedtime {round(bc or 0)}/100</p>')
+    eff_s = f" &middot; {round(eff)}% efficient" if eff else ""
+    return f'''
   <section class="panel hidden" id="tab-sleep">
-    <div class="hd"><div class="hd-t">Sleep</div><div class="hd-s">{_chip('Eight Sleep')} {when}</div></div>
+    <div class="hd"><div class="hd-t">Sleep</div><div class="hd-s">{_chip('Eight Sleep')} asleep {asleep}, woke {wake}</div></div>
     <div class="card">
-      <p class="lbl">Stages &middot; {sh:.1f}h{eff}</p>
-      {hyp}
-      <div class="legend" style="margin-top:10px">{_stage_legend(m)}</div>
+      <div class="statline"><div class="bigscore" style="color:{band(score)[1]}">{round(score or 0)}</div>
+      <div><div class="lbl" style="margin:0">Sleep score</div><div class="muted sm">{sh:.1f}h{eff_s}</div></div></div>
+      <div style="margin-top:16px">{breakdown}</div>
     </div>
+    <div class="card"><p class="lbl">Stages</p>{hyp}
+      <div class="legend" style="margin-top:12px">{_stage_legend(m)}</div></div>
+    <div class="card"><p class="lbl">Biometrics</p><div class="bgrid">{"".join(bio)}</div>{sched}</div>
     <div class="card"><p class="lbl">Overnight heart rate</p>{hr_c}</div>
     <div class="card"><p class="lbl">Overnight HRV</p>{hrv_c}</div>
-  </section>"""
+  </section>'''
 
 
 def _panel_body(m, bb, stress, gstamp):
-    bb_c = _area(bb, C_EN, "bbg") if bb else "<p class='muted sm'>No Body Battery data yet.</p>"
-    st_c = _area([(x, y) for x, y in stress], C_ST, "stg", ymax=100) if stress else "<p class='muted sm'>No stress data yet.</p>"
+    bb_c = (_axis(_area(bb, C_EN, "bbg"), 100, 0, _clock_ms(bb[0][0]), _clock_ms(bb[-1][0]))
+            if bb else "<p class='muted sm'>No Body Battery data yet.</p>")
+    sp = [(x, y) for x, y in stress if y is not None and y >= 0]
+    st_c = (_axis(_area(stress, C_ST, "stg", ymax=100), 100, 0, _clock_ms(sp[0][0]), _clock_ms(sp[-1][0]))
+            if sp else "<p class='muted sm'>No stress data yet.</p>")
     gbb = ""
     if m["gbb_wake"] is not None or m["gbb_now"] is not None:
         gbb = f'<p class="muted sm" style="margin:8px 0 0">Garmin: {round(m["gbb_wake"] or 0)} at wake &rarr; {round(m["gbb_now"] or 0)} now</p>'
@@ -444,7 +519,7 @@ def _nav():
         f'<span class="ni">{i}</span>{lbl}</button>' for t, i, lbl in tabs) + '</nav>'
 
 
-def _body(m, rd, hist, acts, vo2max, es, bb, stress):
+def _body(m, rd, hist, acts, vo2max, es, bb, stress, en):
     updated = f"Updated {datetime.now(TZ).strftime('%a %d %b, %H:%M')}"
     sh = (m["sleep_min"] or 0) / 60
     strain = m["strain"] or 0
@@ -453,11 +528,10 @@ def _body(m, rd, hist, acts, vo2max, es, bb, stress):
                "Moderate": "Train with awareness.", "Low": "Prioritise recovery."}.get(band(m["readiness"])[0], "")
     hs = (m["hrv_status"] or "steady").lower()
     brief = f"Slept {sh:.1f}h, HRV {hs}, {sload} strain banked. {verdict}"
-    gstamp = ""
-    if bb:
-        gstamp = "as of " + (_clock(datetime.fromtimestamp(bb[-1][0] / 1000, tz=timezone.utc).isoformat()) or "")
-    return (_panel_today(m, rd, updated, brief)
-            + _panel_sleep(m, es)
+    gstamp = ("as of " + _clock_ms(bb[-1][0])) if bb else ""
+    windows = _windows(es)
+    return (_panel_today(m, rd, updated, brief, windows)
+            + _panel_sleep(m, es, en)
             + _panel_body(m, bb, stress, gstamp)
             + _panel_load(m, acts)
             + _panel_trends(m, hist, vo2max)
@@ -506,6 +580,20 @@ CSS = """
   .hypno{width:100%;height:104px;display:block;}
   .spk{width:100%;height:28px;display:block;}
   .trend{width:100%;height:84px;display:block;}
+  .chart{position:relative;padding-left:36px;}
+  .ytop,.ybot{position:absolute;left:0;width:32px;text-align:right;font-size:10px;color:var(--muted);}
+  .ytop{top:-2px;} .ybot{bottom:20px;}
+  .xax{display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-top:3px;}
+  .bigscore{font-size:44px;font-weight:800;line-height:1;letter-spacing:-.03em;}
+  .bgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;text-align:center;}
+  .bd{margin-bottom:12px;}
+  .bd-l{display:flex;justify-content:space-between;font-size:13px;margin-bottom:5px;}
+  .track{height:7px;background:var(--card2);border-radius:5px;overflow:hidden;}
+  .fill{height:100%;border-radius:5px;}
+  .win{display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid var(--line);}
+  .win:first-of-type{border-top:none;}
+  .wi{font-size:18px;} .wl{color:var(--muted);font-size:14px;flex:1;}
+  .win b{font-size:15px;font-variant-numeric:tabular-nums;}
   .legend{display:flex;flex-wrap:wrap;gap:12px;font-size:12px;color:var(--muted);}
   .legend .lg{display:flex;align-items:center;gap:5px;}
   .legend i{width:9px;height:9px;border-radius:2px;display:inline-block;}
@@ -668,6 +756,8 @@ def build(out_path=None, force_plain=False):
                ORDER BY a.start_time DESC LIMIT 15""").fetchall()
         vrow = con.execute(
             "SELECT vo2max FROM metrics_daily WHERE vo2max IS NOT NULL ORDER BY day DESC LIMIT 1").fetchone()
+        en = con.execute(
+            "SELECT * FROM eightsleep_night ORDER BY night_date DESC LIMIT 1").fetchone()
 
         def raw(source, kind):
             r = con.execute(
@@ -687,7 +777,7 @@ def build(out_path=None, force_plain=False):
             encoding="utf-8")
         return
 
-    body = _body(m, rd, hist, acts, vrow["vo2max"] if vrow else None, es, bb, stress)
+    body = _body(m, rd, hist, acts, vrow["vo2max"] if vrow else None, es, bb, stress, en)
     passphrase = "" if force_plain else env("DASHBOARD_PASSPHRASE")
     if passphrase:
         page = _encrypted_page(body)

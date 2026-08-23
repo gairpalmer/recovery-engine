@@ -24,6 +24,14 @@ CREATE TABLE IF NOT EXISTS eightsleep_night (
     resting_hr      REAL,
     breath_rate     REAL,
     bed_temp        REAL,
+    latency_min     REAL,
+    snore_min       REAL,
+    snore_pct       REAL,
+    tnt             INTEGER,
+    quality_score   REAL,
+    routine_score   REAL,
+    wakeup_consistency  REAL,
+    bedtime_consistency REAL,
     raw_id          INTEGER REFERENCES raw_pull(id)
 );
 

@@ -54,6 +54,14 @@ def parse_night(trend: dict) -> dict:
         "resting_hr": _nested(trend, "sleepQualityScore", "heartRate", "average"),
         "breath_rate": _nested(trend, "sleepQualityScore", "respiratoryRate", "average"),
         "bed_temp": _nested(trend, "sleepQualityScore", "tempBedC", "average"),
+        "latency_min": _mins(_nested(trend, "sleepRoutineScore", "latencyAsleepSeconds", "current")),
+        "snore_min": _mins(trend.get("snoreDuration")),
+        "snore_pct": trend.get("snorePercent"),
+        "tnt": trend.get("tnt"),
+        "quality_score": _nested(trend, "sleepQualityScore", "total"),
+        "routine_score": _nested(trend, "sleepRoutineScore", "total"),
+        "wakeup_consistency": _nested(trend, "sleepRoutineScore", "wakeupConsistency", "score"),
+        "bedtime_consistency": _nested(trend, "sleepRoutineScore", "bedtimeConsistency", "score"),
     }
 
 
